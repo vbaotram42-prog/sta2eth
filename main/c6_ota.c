@@ -98,9 +98,6 @@ static esp_err_t c6_get_firmware_version(firmware_version_t *version, uint32_t t
         ESP_LOGI(TAG, "Attempt %lu to query C6 firmware version...", retry_count);
         
         // TODO: Implement actual ESP-Hosted control channel version query
-        // For now, simulate communication delay
-        vTaskDelay(pdMS_TO_TICKS(100));
-        
         // Placeholder version - set to compatible version to avoid automatic OTA trigger
         // Change this to trigger OTA mode: set version < 1.2.0
         // For testing/normal operation: set version >= 1.2.0
@@ -112,9 +109,6 @@ static esp_err_t c6_get_firmware_version(firmware_version_t *version, uint32_t t
                  version->major, version->minor, version->patch);
         
         return ESP_OK;  // Success
-        
-        // If failed, wait before retry
-        vTaskDelay(pdMS_TO_TICKS(retry_interval_ms));
     }
     
     ESP_LOGW(TAG, "Failed to get C6 firmware version after %lu attempts", retry_count);
@@ -632,11 +626,6 @@ esp_err_t c6_ota_start_mode(void)
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "ESP-Hosted initialized successfully");
-    
-    // Wait for C6 to be ready for OTA communication
-    ESP_LOGI(TAG, "Waiting for C6 to be ready for OTA...");
-    vTaskDelay(pdMS_TO_TICKS(3000)); // Give C6 time to initialize
-    ESP_LOGI(TAG, "C6 should now be ready for OTA operations");
     
     // Create Ethernet netif
     esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();

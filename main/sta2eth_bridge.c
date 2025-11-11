@@ -563,23 +563,7 @@ void app_main(void)
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "Step 0: Checking C6 firmware status...");
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "Waiting for C6 to complete initialization...");
-    ESP_LOGI(TAG, "C6 boot sequence:");
-    ESP_LOGI(TAG, "  - Hardware initialization");
-    ESP_LOGI(TAG, "  - WiFi driver loading");
-    ESP_LOGI(TAG, "  - SDIO communication setup");
-    ESP_LOGI(TAG, "  - Ready for commands");
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "Giving C6 adequate time to boot (up to 15 seconds)...");
-    
-    // Small initial delay to let C6 start booting
-    vTaskDelay(pdMS_TO_TICKS(2000));  // 2 second initial delay
-    
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "Now checking C6 status:");
-    ESP_LOGI(TAG, "  - Verifying C6 presence");
-    ESP_LOGI(TAG, "  - Checking firmware version");
-    ESP_LOGI(TAG, "  - Validating P4-C6 compatibility");
+    ESP_LOGI(TAG, "C6 firmware check will allow adequate time for initialization");
     ESP_LOGI(TAG, "");
     
     if (c6_ota_should_enter_mode()) {
