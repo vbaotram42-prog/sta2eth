@@ -498,11 +498,11 @@ static esp_err_t reinit_ethernet_for_bridge(void)
     // Re-register event handlers
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
     
-    // NOTE: Ethernet is NOT started here!
-    // It will be started AFTER bridge is fully created and event handlers registered
-    // This ensures bridge glue's port_action_start() can respond to ETHERNET_EVENT_START
+    // Start Ethernet driver BEFORE adding to bridge
+    // The netif must be fully operational before bridge can manage it
+    ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
     
-    ESP_LOGI(TAG, "Ethernet re-initialized successfully in clean state (not started yet)");
+    ESP_LOGI(TAG, "Ethernet re-initialized and started successfully in clean state");
     return ESP_OK;
 }
 
@@ -565,12 +565,8 @@ static esp_err_t create_bridge(void)
              s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
     ESP_LOGI(TAG, "===========================================");
     
-    // CRITICAL: Start Ethernet AFTER bridge is fully created
-    // This ensures bridge glue's port_action_start() event handler is registered
-    // and can respond to ETHERNET_EVENT_START to redirect netif->input to bridge
-    ESP_LOGI(TAG, "Starting Ethernet driver now that bridge is ready...");
-    ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
-    ESP_LOGI(TAG, "Ethernet started - bridge should now be forwarding packets");
+    // NOTE: Ethernet was already started in reinit_ethernet_for_bridge()
+    // Bridge glue will handle the ETHERNET_EVENT_START event and redirect input
     
     ESP_LOGI(TAG, "Transparent L2 bridging now active!");
     ESP_LOGI(TAG, "PC should be able to get DHCP and access network");
