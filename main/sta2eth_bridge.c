@@ -347,9 +347,9 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
     ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, NULL, NULL));
     ESP_LOGI(TAG, "✓ Packet callback removed");
     
-    // Cleanup Ethernet netif/glue but KEEP driver installed (reuse it later)
-    // Following official ESP-IDF pattern: drivers stay installed, only netif/glue recreated
-    ESP_LOGI(TAG, "Cleaning up Ethernet network layer (keeping driver)...");
+    // Cleanup Ethernet netif/glue but KEEP driver running
+    // Following official ESP-IDF pattern: drivers stay running, only netif/glue recreated
+    ESP_LOGI(TAG, "Cleaning up Ethernet network layer (keeping driver running)...");
     
     // Stop link down timer
     if (s_link_down_timer) {
@@ -375,10 +375,9 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
         ESP_LOGI(TAG, "✓ Ethernet glue deleted");
     }
     
-    // LAST: Stop Ethernet driver (after netif/glue are cleaned up)
-    // Driver stays installed for reuse - we only stop it
-    ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
-    ESP_LOGI(TAG, "✓ Ethernet driver stopped (still installed)")
+    // NOTE: We do NOT stop the Ethernet driver!
+    // Keep driver running so we can reattach a new netif without restarting
+    ESP_LOGI(TAG, "✓ Ethernet driver kept running for reattachment")
     
     // NOTE: Driver remains installed (s_eth_handle valid) - will be reused in bridge mode
     ESP_LOGI(TAG, "Ethernet cleanup complete - driver ready for reuse");
@@ -567,18 +566,9 @@ static esp_err_t reinit_ethernet_for_bridge(void)
     }
     ESP_LOGI(TAG, "✓ Ethernet netif attached to glue");
     
-    // Configure static IP
-    esp_netif_dhcpc_stop(s_eth_netif);
-    esp_netif_ip_info_t eth_ip_info = {
-        .ip = { .addr = ESP_IP4TOADDR(169, 254, 0, 3) },
-        .gw = { .addr = ESP_IP4TOADDR(169, 254, 0, 1) },
-        .netmask = { .addr = ESP_IP4TOADDR(255, 255, 0, 0) },
-    };
-    ret = esp_netif_set_ip_info(s_eth_netif, &eth_ip_info);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set IP: %s", esp_err_to_name(ret));
-        return ret;
-    }
+    // NOTE: Bridged ports should NOT have IP configuration
+    // IP is managed by the bridge netif, not individual ports
+    // Do NOT call esp_netif_dhcpc_stop() or esp_netif_set_ip_info()
     
     // Enable promiscuous mode (required for bridge)
     bool promiscuous = true;
@@ -698,16 +688,8 @@ static esp_err_t create_bridge(void)
     xEventGroupClearBits(s_event_flags, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_DISCONNECTED_BIT);
     s_wifi_retry_num = 0;
     
-    // Start both drivers - following official ESP-IDF bridge example pattern
-    // Both must be started AFTER bridge is fully configured
-    ESP_LOGI(TAG, "Starting Ethernet driver...");
-    ret = esp_eth_start(s_eth_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start Ethernet: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    ESP_LOGI(TAG, "✓ Ethernet started");
-    
+    // Start WiFi driver
+    // Note: Ethernet driver is already running - we only stopped/recreated netif
     ESP_LOGI(TAG, "Starting WiFi driver...");
     ret = esp_wifi_start();
     if (ret != ESP_OK) {
