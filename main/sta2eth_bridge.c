@@ -61,19 +61,26 @@ static esp_eth_handle_t s_eth_handle = NULL;
 static uint8_t s_pc_mac[6] = {0};
 static bool s_mac_learned = false;
 
-// Link down timer for MAC learning reset
+// Link down timer - restarts device after prolonged cable disconnection (3+ seconds)
+// This distinguishes between brief network glitches vs. intentional cable removal
 static esp_timer_handle_t s_link_down_timer = NULL;
 #define LINK_DOWN_RESET_TIMEOUT_SEC 3
 
 /**
- * Timer callback to reset MAC learning flag after prolonged link down
+ * Timer callback for prolonged Ethernet link down
+ * 
+ * This callback is triggered when Ethernet link stays down for 3+ seconds,
+ * indicating the cable was physically removed (not just a brief network glitch).
+ * 
+ * Action: Restart device to re-initialize and re-learn PC MAC address
  */
 static void link_down_timer_callback(void *arg)
 {
-    ESP_LOGW(TAG, "Ethernet link down for %d seconds - clearing MAC learned flag", 
+    ESP_LOGW(TAG, "Ethernet link down for %d seconds - cable appears to be disconnected", 
              LINK_DOWN_RESET_TIMEOUT_SEC);
-    ESP_LOGW(TAG, "Next boot will re-learn MAC if needed");
-    xEventGroupClearBits(s_event_flags, MAC_LEARNED_BIT);
+    ESP_LOGW(TAG, "Restarting device to re-learn PC MAC address on next cable reconnection");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
 }
 
 /**
@@ -114,6 +121,7 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "Ethernet Link Up");
         
         // Stop link down timer if it was running
+        // Cable was replugged within 3 seconds - just a brief glitch, no restart needed
         if (s_link_down_timer) {
             esp_timer_stop(s_link_down_timer);
         }
@@ -132,10 +140,11 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGW(TAG, "Ethernet Link Down");
         xEventGroupClearBits(s_event_flags, ETH_LINK_UP_BIT);
         
-        // Start timer: if link stays down for 3+ seconds, clear MAC learned flag
-        // This allows re-learning MAC on next power cycle/replug after prolonged disconnect
+        // Start timer: if link stays down for 3+ seconds, restart device
+        // This distinguishes brief network glitches from intentional cable removal
+        // On restart, device will re-learn PC MAC from first packet
         if (s_link_down_timer && s_mac_learned) {
-            ESP_LOGI(TAG, "Starting %ds timer - will clear MAC flag if link stays down", 
+            ESP_LOGI(TAG, "Starting %ds timer - will restart if link stays down", 
                      LINK_DOWN_RESET_TIMEOUT_SEC);
             esp_timer_start_once(s_link_down_timer, LINK_DOWN_RESET_TIMEOUT_SEC * 1000000ULL);
         }
@@ -260,7 +269,8 @@ static esp_err_t init_ethernet(void)
     };
     ESP_ERROR_CHECK(esp_netif_set_ip_info(s_eth_netif, &eth_ip_info));
     
-    // Create link down timer for MAC learning reset
+    // Create link down timer - restarts device after prolonged disconnection
+    // This ensures proper re-initialization when cable is removed and replugged
     const esp_timer_create_args_t timer_args = {
         .callback = &link_down_timer_callback,
         .name = "link_down_timer"
@@ -563,23 +573,7 @@ void app_main(void)
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "Step 0: Checking C6 firmware status...");
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "Waiting for C6 to complete initialization...");
-    ESP_LOGI(TAG, "C6 boot sequence:");
-    ESP_LOGI(TAG, "  - Hardware initialization");
-    ESP_LOGI(TAG, "  - WiFi driver loading");
-    ESP_LOGI(TAG, "  - SDIO communication setup");
-    ESP_LOGI(TAG, "  - Ready for commands");
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "Giving C6 adequate time to boot (up to 15 seconds)...");
-    
-    // Small initial delay to let C6 start booting
-    vTaskDelay(pdMS_TO_TICKS(2000));  // 2 second initial delay
-    
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "Now checking C6 status:");
-    ESP_LOGI(TAG, "  - Verifying C6 presence");
-    ESP_LOGI(TAG, "  - Checking firmware version");
-    ESP_LOGI(TAG, "  - Validating P4-C6 compatibility");
+    ESP_LOGI(TAG, "C6 firmware check will allow adequate time for initialization");
     ESP_LOGI(TAG, "");
     
     if (c6_ota_should_enter_mode()) {

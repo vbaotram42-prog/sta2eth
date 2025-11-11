@@ -283,7 +283,7 @@ static esp_err_t connect_handler(httpd_req_t *req)
     
     // Wait for connection result (with timeout)
     // In APSTA mode, we can briefly test connection while AP stays active
-    vTaskDelay(pdMS_TO_TICKS(8000));  // Wait up to 8 seconds for connection
+    vTaskDelay(pdMS_TO_TICKS(5000));  // Wait up to 5 seconds for connection
     
     // Check if connected
     wifi_ap_record_t ap_info;
