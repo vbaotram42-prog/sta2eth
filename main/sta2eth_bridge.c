@@ -347,8 +347,9 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
     ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, NULL, NULL));
     ESP_LOGI(TAG, "✓ Packet callback removed");
     
-    // Complete teardown of Ethernet to ensure absolutely clean state
-    ESP_LOGI(TAG, "Performing COMPLETE Ethernet teardown...");
+    // Cleanup Ethernet netif/glue but KEEP driver installed (reuse it later)
+    // Following official ESP-IDF pattern: drivers stay installed, only netif/glue recreated
+    ESP_LOGI(TAG, "Cleaning up Ethernet network layer (keeping driver)...");
     
     // Stop link down timer
     if (s_link_down_timer) {
@@ -361,12 +362,12 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
     ESP_ERROR_CHECK(esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler));
     ESP_LOGI(TAG, "✓ Event handlers unregistered");
     
-    // Stop Ethernet driver
+    // Stop Ethernet driver (but keep it installed for reuse)
     ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
-    ESP_LOGI(TAG, "✓ Ethernet driver stopped");
+    ESP_LOGI(TAG, "✓ Ethernet driver stopped (still installed)");
     
-    // Critical cleanup order to avoid "reference in use" error:
-    // 1. Destroy netif first (this releases glue's internal references)
+    // Cleanup order to properly release resources:
+    // 1. Destroy netif first (releases glue's internal references)
     esp_netif_destroy(s_eth_netif);
     s_eth_netif = NULL;
     ESP_LOGI(TAG, "✓ Ethernet netif destroyed");
@@ -378,12 +379,8 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
         ESP_LOGI(TAG, "✓ Ethernet glue deleted");
     }
     
-    // 3. Now driver should have no references, can uninstall
-    ESP_ERROR_CHECK(esp_eth_driver_uninstall(s_eth_handle));
-    s_eth_handle = NULL;
-    ESP_LOGI(TAG, "✓ Ethernet driver completely uninstalled");
-    
-    ESP_LOGI(TAG, "Complete Ethernet teardown finished - will reinitialize from scratch");
+    // NOTE: Driver remains installed (s_eth_handle valid) - will be reused in bridge mode
+    ESP_LOGI(TAG, "Ethernet cleanup complete - driver ready for reuse");
     
     return ESP_OK;
 }
@@ -512,14 +509,14 @@ static esp_err_t init_wifi_with_pc_mac(void)
 }
 
 /**
- * Reinitialize Ethernet COMPLETELY from scratch for bridge
+ * Reinitialize Ethernet network layer for bridge
  * 
- * Previous Ethernet was COMPLETELY torn down (driver uninstalled).
- * Now recreate everything fresh:
- * 1. Reinitialize Ethernet driver
- * 2. Create netif
- * 3. Create glue
- * 4. Attach and configure
+ * Driver is already installed and stopped - reuse it.
+ * Following official ESP-IDF pattern:
+ * 1. Create new netif (bridged config)
+ * 2. Create new glue
+ * 3. Attach to existing driver
+ * 4. Configure and register handlers
  * 
  * Returns:
  * - ESP_OK: Ethernet ready for bridge
@@ -527,20 +524,14 @@ static esp_err_t init_wifi_with_pc_mac(void)
  */
 static esp_err_t reinit_ethernet_for_bridge(void)
 {
-    ESP_LOGI(TAG, "Reinitializing Ethernet COMPLETELY from scratch...");
+    ESP_LOGI(TAG, "Re-initializing Ethernet for bridge (reusing driver)...");
     
-    // Reinitialize Ethernet driver from scratch
-    uint8_t eth_port_cnt = 0;
-    esp_eth_handle_t *eth_handles;
-    esp_err_t ret = ethernet_init_all(&eth_handles, &eth_port_cnt);
-    if (ret != ESP_OK || eth_port_cnt == 0) {
-        ESP_LOGE(TAG, "Failed to reinitialize Ethernet driver");
+    // Verify driver is still valid
+    if (!s_eth_handle) {
+        ESP_LOGE(TAG, "Ethernet driver handle is NULL");
         return ESP_FAIL;
     }
-    
-    s_eth_handle = eth_handles[0];
-    free(eth_handles);
-    ESP_LOGI(TAG, "✓ Ethernet driver reinitialized");
+    ESP_LOGI(TAG, "✓ Using existing Ethernet driver");
     
     // Create clean Ethernet netif for bridge
     esp_netif_inherent_config_t eth_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
@@ -554,8 +545,9 @@ static esp_err_t reinit_ethernet_for_bridge(void)
         ESP_LOGE(TAG, "Failed to create Ethernet netif");
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "✓ New Ethernet netif created");
     
-    // Create fresh glue and attach to netif
+    // Create fresh glue and attach to existing driver
     s_eth_glue = esp_eth_new_netif_glue(s_eth_handle);
     if (!s_eth_glue) {
         ESP_LOGE(TAG, "Failed to create Ethernet glue");
@@ -564,7 +556,7 @@ static esp_err_t reinit_ethernet_for_bridge(void)
         return ESP_FAIL;
     }
     
-    ret = esp_netif_attach(s_eth_netif, s_eth_glue);
+    esp_err_t ret = esp_netif_attach(s_eth_netif, s_eth_glue);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to attach: %s", esp_err_to_name(ret));
         esp_netif_destroy(s_eth_netif);
@@ -616,7 +608,8 @@ static esp_err_t reinit_ethernet_for_bridge(void)
     // NOTE: Do NOT start Ethernet here!
     // Will be started in create_bridge() after bridge is configured
     
-    ESP_LOGI(TAG, "Ethernet completely reinitialized (not started yet)");
+    ESP_LOGI(TAG, "Ethernet network layer re-initialized for bridge (driver reused)");
+    ESP_LOGI(TAG, "✓ Ethernet re-initialized for bridge");
     return ESP_OK;
 }
 
