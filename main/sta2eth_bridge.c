@@ -482,6 +482,12 @@ static esp_err_t reinit_ethernet_for_bridge(void)
     // Attach Ethernet driver to netif (driver handle is still valid from initial setup)
     ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle)));
     
+    // Start the Ethernet driver FIRST - this initializes the netif properly
+    // The driver must be started before adding to bridge so netif is fully initialized
+    ESP_LOGI(TAG, "Starting Ethernet driver to initialize netif...");
+    ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
+    ESP_LOGI(TAG, "Ethernet driver started, netif fully initialized");
+    
     // Assign static link-local IP to Ethernet
     esp_netif_dhcpc_stop(s_eth_netif);
     esp_netif_ip_info_t eth_ip_info = {
@@ -498,8 +504,8 @@ static esp_err_t reinit_ethernet_for_bridge(void)
     // Re-register event handlers
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
     
-    ESP_LOGI(TAG, "Ethernet re-initialized successfully in clean state");
-    ESP_LOGI(TAG, "Note: Ethernet will be started after being added to bridge");
+    ESP_LOGI(TAG, "Ethernet re-initialized and started successfully");
+    ESP_LOGI(TAG, "Ready to be added to bridge (netif is now fully operational)");
     return ESP_OK;
 }
 
@@ -544,13 +550,14 @@ static esp_err_t create_bridge(void)
     
     // Attach bridge glue to bridge netif
     ESP_ERROR_CHECK(esp_netif_attach(s_br_netif, br_glue));
+    ESP_LOGI(TAG, "Bridge glue attached successfully");
     
-    // Now that bridge event handlers are registered, start Ethernet
-    // This ensures bridge glue's port_action_start() will receive ETHERNET_EVENT_START
-    // and properly redirect netif input to the bridge
-    ESP_LOGI(TAG, "Starting Ethernet driver with bridge glue registered...");
+    // NOW start Ethernet driver (following ESP-IDF bridge example pattern)
+    // This must be done AFTER bridge glue is attached, so bridge event handlers
+    // can intercept ETHERNET_EVENT_START and set up packet forwarding properly
+    ESP_LOGI(TAG, "Starting Ethernet driver with bridge fully configured...");
     ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
-    ESP_LOGI(TAG, "Ethernet started - bridge will intercept ETHERNET_EVENT_START");
+    ESP_LOGI(TAG, "Ethernet started - bridge is now operational");
     
     // Note: Bridge operates at L2, no IP event handling needed
     // PC will obtain IP directly from router via transparent bridging
