@@ -1,0 +1,426 @@
+I (290) heap_init: Initializing. RAM available for dynamic allocation:
+I (297) heap_init: At 4FF13580 len 00027A40 (158 KiB): RETENT_RAM
+I (302) heap_init: At 4FF3AFC0 len 00004BF0 (18 KiB): RAM
+I (307) heap_init: At 4FF40000 len 00060000 (384 KiB): RAM
+I (313) heap_init: At 50108080 len 00007F80 (31 KiB): RTCRAM
+I (318) heap_init: At 30100088 len 00001F78 (7 KiB): TCM
+I (324) spi_flash: detected chip: generic
+I (327) spi_flash: flash io: dio
+W (330) spi_flash: Detected size(16384k) larger than the size in the binary image header(2048k). Using the size in the binary image header.
+I (342) host_init: ESP Hosted : Host chip_ip[18]
+I (373) H_API: ESP-Hosted starting. Hosted_Tasks: prio:23, stack: 5120 RPC_task_stack: 5120
+I (373) H_API: ** add_esp_wifi_remote_channels **
+I (375) transport: Add ESP-Hosted channel IF[1]: S[0] Tx[0x4000fde8] Rx[0x4002454e]
+--- 0x4000fde8: transport_drv_sta_tx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_hosted/host/drivers/transport/transport_drv.c:251
+--- 0x4002454e: esp_wifi_remote_channel_rx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_wifi_remote/esp_wifi_remote_net.c:19
+I (382) transport: Add ESP-Hosted channel IF[2]: S[0] Tx[0x4000fd28] Rx[0x4002454e]
+--- 0x4000fd28: transport_drv_ap_tx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_hosted/host/drivers/transport/transport_drv.c:281
+--- 0x4002454e: esp_wifi_remote_channel_rx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_wifi_remote/esp_wifi_remote_net.c:19
+sdio_mempool_create free:195112 min-free:195112 lfb-def:147456 lfb-8bit:147456
+
+I (398) H_SDIO_DRV: sdio_data_to_rx_buf_task started
+I (398) main_task: Started on CPU0
+I (408) main_task: Calling app_main()
+I (408) sta2eth: ===========================================
+I (408) sta2eth: STA2ETH L2 Bridge with Dynamic MAC Learning
+I (418) sta2eth: ===========================================
+I (428) sta2eth:
+I (428) sta2eth: Step 0: Checking C6 firmware status...
+I (428) sta2eth:
+I (428) sta2eth: C6 firmware check will allow adequate time for initialization
+I (438) sta2eth:
+I (438) c6_ota: ===========================================
+I (448) c6_ota: Checking C6 firmware status...
+I (448) c6_ota: ===========================================
+I (458) c6_ota: Allowing C6 initialization time: 15 seconds
+I (458) c6_ota: This ensures C6 firmware can properly boot and respond
+I (468) c6_ota: Checking if C6 firmware upgrade is needed...
+I (468) c6_ota: Minimum required version: 1.2.0
+I (478) c6_ota: Waiting for C6 to initialize and respond...
+I (478) c6_ota: Timeout: 15000 ms
+I (488) c6_ota: Attempt 1 to query C6 firmware version...
+I (488) c6_ota: C6 firmware version: 1.2.0
+I (498) c6_ota: C6 firmware version is compatible
+I (498) c6_ota: C6 firmware is compatible and responding
+I (508) sta2eth: ✓ C6 firmware check passed - version compatible
+I (508) sta2eth: ✓ C6 is present and working
+I (518) sta2eth: Proceeding with normal bridge initialization...
+I (518) sta2eth:
+I (518) sta2eth: Step 1: Initializing Ethernet (IP101 PHY)...
+I (578) esp_eth.netif.netif_glue: 30:ed:a0:e3:30:71
+I (578) esp_eth.netif.netif_glue: ethernet attached to netif
+I (578) sta2eth: Ethernet promiscuous mode enabled for MAC learning
+I (578) sta2eth: MAC learning callback registered (one-time use)
+I (2988) ethernet_init: Ethernet(IP101[31,52]) Started
+I (2988) sta2eth: Ethernet Started
+I (2988) ethernet_init: Ethernet(IP101[31,52]) Link Up
+I (2988) ethernet_init: Ethernet(IP101[31,52]) HW Addr 30:ed:a0:e3:30:71
+I (2988) sta2eth: Ethernet Link Up
+I (2998) sta2eth: Ethernet initialized successfully
+I (2998) sta2eth: Step 2: Waiting for Ethernet link and PC packet...
+I (3008) sta2eth: Waiting for Ethernet link up...
+I (3008) sta2eth: Ethernet link is up!
+I (3018) sta2eth: Waiting for first packet from PC to learn MAC address...
+I (3018) sta2eth: (Please ensure PC is connected and sending traffic)
+I (3028) sta2eth: ===========================================
+I (3028) sta2eth: PC MAC Address Learned!
+I (3038) sta2eth: MAC: 18:84:c1:f8:f2:1d
+I (3038) sta2eth: ===========================================
+I (3048) sta2eth: PC MAC learned successfully!
+I (3048) sta2eth: Deinitializing Ethernet to ensure clean state for bridge...
+I (3058) ethernet_init: Ethernet(IP101[31,52]) Link Down
+I (3058) sta2eth: Ethernet stopped
+W (3058) sta2eth: Ethernet Link Down
+I (3068) sta2eth: Starting 3s timer - will restart if link stays down
+I (3068) ethernet_init: Ethernet(IP101[31,52]) Stopped
+E (3078) esp.emac: emac_esp32_rm_mac_filter(251): failed to remove MAC filter
+E (3088) esp_eth: esp_eth_ioctl(540): remove mac address from filter failed
+E (3088) esp_eth.netif.netif_glue: eth_set_mac_filter(58): failed to delete mac filter
+E (3098) esp_netif_lwip: Failed to remove multicast filter for IPv4
+I (3108) sta2eth: Ethernet Stopped
+I (3108) sta2eth: Ethernet event handlers unregistered
+I (3108) sta2eth: Ethernet netif destroyed
+I (3118) sta2eth: Ethernet deinitialization complete - ready for clean bridge init
+I (3128) wifi_config_portal: WiFi credentials found in P4's NVS
+I (3128) sta2eth: WiFi already provisioned, using saved credentials
+I (3138) sta2eth: Reconfigure button monitoring started (GPIO2)
+I (3138) sta2eth: Long press (2 seconds) to reset WiFi credentials
+I (3148) sta2eth: Step 3: Initializing WiFi with PC MAC...
+I (3148) transport: Attempt connection with slave: retry[0]
+W (3158) H_SDIO_DRV: Reset slave using GPIO[54]
+I (3158) os_wrapper_esp: GPIO [54] configured
+I (4688) sdio_wrapper: SDIO master: Slot 1, Data-Lines: 4-bit Freq(KHz)[40000 KHz]
+I (4688) sdio_wrapper: GPIOs: CLK[18] CMD[19] D0[14] D1[15] D2[16] D3[17] Slave_Reset[54]
+I (4688) sdio_wrapper: Queues: Tx[20] Rx[20] SDIO-Rx-Mode[1]
+I (4728) sdio_wrapper: Function 0 Blocksize: 512
+I (4728) sdio_wrapper: Function 1 Blocksize: 512
+I (4828) H_SDIO_DRV: Card init success, TRANSPORT_RX_ACTIVE
+I (4828) transport: set_transport_state: 1
+I (4828) transport: Waiting for esp_hosted slave to be ready
+I (4898) H_SDIO_DRV: SDIO Host operating in STREAMING MODE
+I (4898) H_SDIO_DRV: Open data path at slave
+I (4898) H_SDIO_DRV: Starting SDIO process rx task
+I (4898) H_SDIO_DRV: Received ESP_PRIV_IF type message
+I (4898) transport: Received INIT event from ESP32 peripheral
+I (4908) transport: EVENT: 12
+I (4908) transport: Identified slave [esp32c6]
+I (4908) transport: EVENT: 11
+I (4918) transport: capabilities: 0xd
+I (4918) transport: Features supported are:
+I (4918) transport:      * WLAN
+I (4928) transport:        - HCI over SDIO
+I (4928) transport:        - BLE only
+I (4928) transport: EVENT: 13
+W (4938) transport: === ESP-Hosted Version Warning ===
+Version on Host is NEWER than version on co-processor
+RPC requests sent by host may encounter timeout errors
+or may not be supported by co-processor
+W (4948) transport: === ESP-Hosted Version Warning ===
+I (4958) transport: ESP board type is : 13
+
+I (4958) transport: Base transport is set-up, TRANSPORT_TX_ACTIVE
+I (4968) H_API: Transport active
+I (4968) transport: Slave chip Id[12]
+I (4978) transport: raw_tp_dir[-], flow_ctrl: low[60] high[80]
+I (4978) transport: transport_delayed_init
+I (4988) esp_cli: Remove any existing deep_sleep cmd in cli
+I (4988) esp_cli: Registering command: crash
+I (4988) esp_cli: Registering command: reboot
+I (4998) esp_cli: Registering command: mem-dump
+I (4998) esp_cli: Registering command: task-dump
+I (5008) esp_cli: Registering command: cpu-dump
+I (5008) esp_cli: Registering command: heap-trace
+I (5018) esp_cli: Registering command: sock-dump
+I (5018) esp_cli: Registering command: host-power-save
+I (5028) hci_stub_drv: Host BT Support: Disabled
+I (5028) H_SDIO_DRV: Received INIT event
+I (5028) H_SDIO_DRV: Event type: 0x22
+I (5038) H_SDIO_DRV: Write thread started
+I (5398) RPC_WRAP: --- ESP Event: Slave ESP Init ---
+I (5508) sta2eth: Setting WiFi storage to RAM only (C6 won't save credentials)
+I (5518) sta2eth: Setting WiFi STA MAC to PC MAC: 18:84:c1:f8:f2:1d
+I (5528) sta2eth: WiFi STA assigned static IP: 169.254.0.2
+I (5618) sta2eth: WiFi initialized with PC MAC
+I (5618) sta2eth: Step 4: Configuring WiFi connection...
+I (5618) wifi_config_portal: WiFi credentials loaded from P4's NVS: SSID=xinxin
+I (5628) sta2eth: WiFi credentials loaded: SSID=xinxin
+I (5628) RPC_WRAP: ESP Event: wifi station started
+W (6068) sta2eth: Ethernet link down for 3 seconds - cable appears to be disconnected
+W (6078) sta2eth: Restarting device to re-learn PC MAC address on next cable reconnection
+W (6648) rpc_rsp: Hosted RPC_Resp [0x21a], uid [6], resp code [12298]
+I (6668) sta2eth: WiFi STA started, initiating connection...
+I (6668) H_API: esp_wifi_remote_connect
+I (6688) sta2eth: Waiting for WiFi connection...
+ESP-ROM:esp32p4-eco2-20240710
+Build:Jul 10 2024
+rst:0xc (SW_CPU_RESET),boot:0x30f (SPI_FAST_FLASH_BOOT)
+Core0 Saved PC:0x4ff0444e
+--- 0x4ff0444e: cpu_utility_ll_reset_cpu at F:/esp/master/esp-idf/components/hal/esp32p4/include/hal/cpu_utility_ll.h:25
+--- (inlined by) esp_cpu_reset at F:/esp/master/esp-idf/components/esp_hw_support/cpu.c:49
+Core1 Saved PC:0x4ff045aa
+--- 0x4ff045aa: esp_cpu_wait_for_intr at F:/esp/master/esp-idf/components/esp_hw_support/cpu.c:57
+SPI mode:DIO, clock div:1
+load:0x4ff33ce0,len:0x164c
+load:0x4ff29ed0,len:0xdf8
+load:0x4ff2cbd0,len:0x3630
+entry 0x4ff29eda
+I (33) boot: ESP-IDF v6.1-dev-1-gff97953b32 2nd stage bootloader
+I (33) boot: compile time Nov 11 2025 08:55:01
+I (34) boot: Multicore bootloader
+I (35) boot: chip revision: v1.3
+I (38) boot: efuse block revision: v0.3
+I (41) boot.esp32p4: SPI Speed      : 80MHz
+I (45) boot.esp32p4: SPI Mode       : DIO
+I (49) boot.esp32p4: SPI Flash Size : 2MB
+I (52) boot: Enabling RNG early entropy source...
+I (57) boot: Partition Table:
+I (60) boot: ## Label            Usage          Type ST Offset   Length
+I (66) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (72) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (79) boot:  2 factory          factory app      00 00 00010000 00100000
+I (86) boot: End of partition table
+I (89) esp_image: segment 0: paddr=00010020 vaddr=40080020 size=3a770h (239472) map
+I (132) esp_image: segment 1: paddr=0004a798 vaddr=30100000 size=00088h (   136) load
+I (133) esp_image: segment 2: paddr=0004a828 vaddr=4ff00000 size=057f0h ( 22512) load
+I (140) esp_image: segment 3: paddr=00050020 vaddr=40000020 size=741dch (475612) map
+I (212) esp_image: segment 4: paddr=000c4204 vaddr=4ff057f0 size=08f38h ( 36664) load
+I (220) esp_image: segment 5: paddr=000cd144 vaddr=4ff0e780 size=025d0h (  9680) load
+I (226) boot: Loaded app from partition at offset 0x10000
+I (226) boot: Disabling RNG early entropy source...
+I (240) cpu_start: Multicore app
+I (250) cpu_start: GPIO 38 and 37 are used as console UART I/O pins
+I (250) cpu_start: Pro cpu start user code
+I (250) cpu_start: cpu freq: 360000000 Hz
+I (252) app_init: Application information:
+I (256) app_init: Project name:     sta2eth_p4_c6
+I (260) app_init: App version:      692a162
+I (264) app_init: Compile time:     Nov 11 2025 19:11:43
+I (269) app_init: ELF file SHA256:  5e902fbb2...
+I (273) app_init: ESP-IDF:          v6.1-dev-1-gff97953b32
+I (279) efuse_init: Min chip rev:     v0.1
+I (282) efuse_init: Max chip rev:     v1.99
+I (286) efuse_init: Chip rev:         v1.3
+I (290) heap_init: Initializing. RAM available for dynamic allocation:
+I (297) heap_init: At 4FF13580 len 00027A40 (158 KiB): RETENT_RAM
+I (302) heap_init: At 4FF3AFC0 len 00004BF0 (18 KiB): RAM
+I (307) heap_init: At 4FF40000 len 00060000 (384 KiB): RAM
+I (313) heap_init: At 50108080 len 00007F80 (31 KiB): RTCRAM
+I (318) heap_init: At 30100088 len 00001F78 (7 KiB): TCM
+I (324) spi_flash: detected chip: generic
+I (327) spi_flash: flash io: dio
+W (330) spi_flash: Detected size(16384k) larger than the size in the binary image header(2048k). Using the size in the binary image header.
+I (342) host_init: ESP Hosted : Host chip_ip[18]
+I (373) H_API: ESP-Hosted starting. Hosted_Tasks: prio:23, stack: 5120 RPC_task_stack: 5120
+I (373) H_API: ** add_esp_wifi_remote_channels **
+I (375) transport: Add ESP-Hosted channel IF[1]: S[0] Tx[0x4000fde8] Rx[0x4002454e]
+--- 0x4000fde8: transport_drv_sta_tx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_hosted/host/drivers/transport/transport_drv.c:251
+--- 0x4002454e: esp_wifi_remote_channel_rx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_wifi_remote/esp_wifi_remote_net.c:19
+I (382) transport: Add ESP-Hosted channel IF[2]: S[0] Tx[0x4000fd28] Rx[0x4002454e]
+--- 0x4000fd28: transport_drv_ap_tx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_hosted/host/drivers/transport/transport_drv.c:281
+--- 0x4002454e: esp_wifi_remote_channel_rx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_wifi_remote/esp_wifi_remote_net.c:19
+sdio_mempool_create free:195112 min-free:195112 lfb-def:147456 lfb-8bit:147456
+
+I (398) H_SDIO_DRV: sdio_data_to_rx_buf_task started
+I (398) main_task: Started on CPU0
+I (408) main_task: Calling app_main()
+I (408) sta2eth: ===========================================
+I (408) sta2eth: STA2ETH L2 Bridge with Dynamic MAC Learning
+I (418) sta2eth: ===========================================
+I (428) sta2eth:
+I (428) sta2eth: Step 0: Checking C6 firmware status...
+I (428) sta2eth:
+I (428) sta2eth: C6 firmware check will allow adequate time for initialization
+I (438) sta2eth:
+I (438) c6_ota: ===========================================
+I (448) c6_ota: Checking C6 firmware status...
+I (448) c6_ota: ===========================================
+I (458) c6_ota: Allowing C6 initialization time: 15 seconds
+I (458) c6_ota: This ensures C6 firmware can properly boot and respond
+I (468) c6_ota: Checking if C6 firmware upgrade is needed...
+I (468) c6_ota: Minimum required version: 1.2.0
+I (478) c6_ota: Waiting for C6 to initialize and respond...
+I (478) c6_ota: Timeout: 15000 ms
+I (488) c6_ota: Attempt 1 to query C6 firmware version...
+I (488) c6_ota: C6 firmware version: 1.2.0
+I (498) c6_ota: C6 firmware version is compatible
+I (498) c6_ota: C6 firmware is compatible and responding
+I (508) sta2eth: ✓ C6 firmware check passed - version compatible
+I (508) sta2eth: ✓ C6 is present and working
+I (518) sta2eth: Proceeding with normal bridge initialization...
+I (518) sta2eth: 
+I (518) sta2eth: Step 1: Initializing Ethernet (IP101 PHY)...
+I (578) esp_eth.netif.netif_glue: 30:ed:a0:e3:30:71
+I (578) esp_eth.netif.netif_glue: ethernet attached to netif
+I (578) sta2eth: Ethernet promiscuous mode enabled for MAC learning
+I (578) sta2eth: MAC learning callback registered (one-time use)
+I (2988) ethernet_init: Ethernet(IP101[31,52]) Started
+I (2988) sta2eth: Ethernet Started
+I (2988) ethernet_init: Ethernet(IP101[31,52]) Link Up
+I (2988) ethernet_init: Ethernet(IP101[31,52]) HW Addr 30:ed:a0:e3:30:71
+I (2988) sta2eth: Ethernet Link Up
+I (2998) sta2eth: Ethernet initialized successfully
+I (2998) sta2eth: Step 2: Waiting for Ethernet link and PC packet...
+I (3008) sta2eth: Waiting for Ethernet link up...
+I (3008) sta2eth: Ethernet link is up!
+I (3018) sta2eth: Waiting for first packet from PC to learn MAC address...
+I (3018) sta2eth: (Please ensure PC is connected and sending traffic)
+I (3038) sta2eth: ===========================================
+I (3038) sta2eth: PC MAC Address Learned!
+I (3038) sta2eth: MAC: 18:84:c1:f8:f2:1d
+I (3048) sta2eth: ===========================================
+I (3048) sta2eth: PC MAC learned successfully!
+I (3058) sta2eth: Deinitializing Ethernet to ensure clean state for bridge...
+I (3058) ethernet_init: Ethernet(IP101[31,52]) Link Down
+I (3068) sta2eth: Ethernet stopped
+W (3068) sta2eth: Ethernet Link Down
+I (3068) sta2eth: Starting 3s timer - will restart if link stays down
+I (3078) ethernet_init: Ethernet(IP101[31,52]) Stopped
+E (3078) esp.emac: emac_esp32_rm_mac_filter(251): failed to remove MAC filter
+E (3088) esp_eth: esp_eth_ioctl(540): remove mac address from filter failed
+E (3098) esp_eth.netif.netif_glue: eth_set_mac_filter(58): failed to delete mac filter
+E (3108) esp_netif_lwip: Failed to remove multicast filter for IPv4
+I (3108) sta2eth: Ethernet Stopped
+I (3118) sta2eth: Ethernet event handlers unregistered
+I (3118) sta2eth: Ethernet netif destroyed
+I (3118) sta2eth: Ethernet deinitialization complete - ready for clean bridge init
+I (3128) wifi_config_portal: WiFi credentials found in P4's NVS
+I (3138) sta2eth: WiFi already provisioned, using saved credentials
+I (3138) sta2eth: Reconfigure button monitoring started (GPIO2)
+I (3148) sta2eth: Long press (2 seconds) to reset WiFi credentials
+I (3148) sta2eth: Step 3: Initializing WiFi with PC MAC...
+I (3158) transport: Attempt connection with slave: retry[0]
+W (3158) H_SDIO_DRV: Reset slave using GPIO[54]
+I (3168) os_wrapper_esp: GPIO [54] configured
+I (4688) sdio_wrapper: SDIO master: Slot 1, Data-Lines: 4-bit Freq(KHz)[40000 KHz]
+I (4688) sdio_wrapper: GPIOs: CLK[18] CMD[19] D0[14] D1[15] D2[16] D3[17] Slave_Reset[54]
+I (4688) sdio_wrapper: Queues: Tx[20] Rx[20] SDIO-Rx-Mode[1]
+I (4728) sdio_wrapper: Function 0 Blocksize: 512
+I (4728) sdio_wrapper: Function 1 Blocksize: 512
+I (4828) H_SDIO_DRV: Card init success, TRANSPORT_RX_ACTIVE
+I (4828) transport: set_transport_state: 1
+I (4828) transport: Waiting for esp_hosted slave to be ready
+I (4898) H_SDIO_DRV: SDIO Host operating in STREAMING MODE
+I (4898) H_SDIO_DRV: Open data path at slave
+I (4898) H_SDIO_DRV: Starting SDIO process rx task
+I (4898) H_SDIO_DRV: Received ESP_PRIV_IF type message
+I (4898) transport: Received INIT event from ESP32 peripheral
+I (4908) transport: EVENT: 12
+I (4908) transport: Identified slave [esp32c6]
+I (4908) transport: EVENT: 11
+I (4918) transport: capabilities: 0xd
+I (4918) transport: Features supported are:
+I (4918) transport:      * WLAN
+I (4928) transport:        - HCI over SDIO
+I (4928) transport:        - BLE only
+I (4928) transport: EVENT: 13
+W (4938) transport: === ESP-Hosted Version Warning ===
+Version on Host is NEWER than version on co-processor
+RPC requests sent by host may encounter timeout errors
+or may not be supported by co-processor
+W (4948) transport: === ESP-Hosted Version Warning ===
+I (4958) transport: ESP board type is : 13
+
+I (4958) transport: Base transport is set-up, TRANSPORT_TX_ACTIVE
+I (4968) H_API: Transport active
+I (4968) transport: Slave chip Id[12]
+I (4978) transport: raw_tp_dir[-], flow_ctrl: low[60] high[80]
+I (4978) transport: transport_delayed_init
+I (4988) esp_cli: Remove any existing deep_sleep cmd in cli
+I (4988) esp_cli: Registering command: crash
+I (4988) esp_cli: Registering command: reboot
+I (4998) esp_cli: Registering command: mem-dump
+I (4998) esp_cli: Registering command: task-dump
+I (5008) esp_cli: Registering command: cpu-dump
+I (5008) esp_cli: Registering command: heap-trace
+I (5018) esp_cli: Registering command: sock-dump
+I (5018) esp_cli: Registering command: host-power-save
+I (5028) hci_stub_drv: Host BT Support: Disabled
+I (5028) H_SDIO_DRV: Received INIT event
+I (5028) H_SDIO_DRV: Event type: 0x22
+I (5038) H_SDIO_DRV: Write thread started
+I (5398) RPC_WRAP: --- ESP Event: Slave ESP Init ---
+I (5508) sta2eth: Setting WiFi storage to RAM only (C6 won't save credentials)
+I (5518) sta2eth: Setting WiFi STA MAC to PC MAC: 18:84:c1:f8:f2:1d
+I (5528) sta2eth: WiFi STA assigned static IP: 169.254.0.2
+I (5618) sta2eth: WiFi initialized with PC MAC
+I (5618) sta2eth: Step 4: Configuring WiFi connection...
+I (5618) wifi_config_portal: WiFi credentials loaded from P4's NVS: SSID=xinxin
+I (5628) sta2eth: WiFi credentials loaded: SSID=xinxin
+I (5628) RPC_WRAP: ESP Event: wifi station started
+W (6078) sta2eth: Ethernet link down for 3 seconds - cable appears to be disconnected
+W (6078) sta2eth: Restarting device to re-learn PC MAC address on next cable reconnection
+W (6648) rpc_rsp: Hosted RPC_Resp [0x21a], uid [6], resp code [12298]
+I (6668) sta2eth: WiFi STA started, initiating connection...
+I (6668) H_API: esp_wifi_remote_connect
+I (6688) sta2eth: Waiting for WiFi connection...
+ESP-ROM:esp32p4-eco2-20240710
+Build:Jul 10 2024
+rst:0xc (SW_CPU_RESET),boot:0x30f (SPI_FAST_FLASH_BOOT)
+Core0 Saved PC:0x4ff0444e
+--- 0x4ff0444e: cpu_utility_ll_reset_cpu at F:/esp/master/esp-idf/components/hal/esp32p4/include/hal/cpu_utility_ll.h:25
+--- (inlined by) esp_cpu_reset at F:/esp/master/esp-idf/components/esp_hw_support/cpu.c:49
+Core1 Saved PC:0x4ff0c1d2
+--- 0x4ff0c1d2: esp_log_va at F:/esp/master/esp-idf/components/log/src/log.c:41
+--- (inlined by) esp_log at F:/esp/master/esp-idf/components/log/src/log.c:88
+SPI mode:DIO, clock div:1
+load:0x4ff33ce0,len:0x164c
+load:0x4ff29ed0,len:0xdf8
+load:0x4ff2cbd0,len:0x3630
+entry 0x4ff29eda
+I (33) boot: ESP-IDF v6.1-dev-1-gff97953b32 2nd stage bootloader
+I (33) boot: compile time Nov 11 2025 08:55:01
+I (34) boot: Multicore bootloader
+I (35) boot: chip revision: v1.3
+I (38) boot: efuse block revision: v0.3
+I (41) boot.esp32p4: SPI Speed      : 80MHz
+I (45) boot.esp32p4: SPI Mode       : DIO
+I (49) boot.esp32p4: SPI Flash Size : 2MB
+I (52) boot: Enabling RNG early entropy source...
+I (57) boot: Partition Table:
+I (60) boot: ## Label            Usage          Type ST Offset   Length
+I (66) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (72) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (79) boot:  2 factory          factory app      00 00 00010000 00100000
+I (86) boot: End of partition table
+I (89) esp_image: segment 0: paddr=00010020 vaddr=40080020 size=3a770h (239472) map
+I (132) esp_image: segment 1: paddr=0004a798 vaddr=30100000 size=00088h (   136) load
+I (133) esp_image: segment 2: paddr=0004a828 vaddr=4ff00000 size=057f0h ( 22512) load
+I (140) esp_image: segment 3: paddr=00050020 vaddr=40000020 size=741dch (475612) map
+I (212) esp_image: segment 4: paddr=000c4204 vaddr=4ff057f0 size=08f38h ( 36664) load
+I (220) esp_image: segment 5: paddr=000cd144 vaddr=4ff0e780 size=025d0h (  9680) load
+I (226) boot: Loaded app from partition at offset 0x10000
+I (226) boot: Disabling RNG early entropy source...
+I (240) cpu_start: Multicore app
+I (250) cpu_start: GPIO 38 and 37 are used as console UART I/O pins
+I (250) cpu_start: Pro cpu start user code
+I (250) cpu_start: cpu freq: 360000000 Hz
+I (252) app_init: Application information:
+I (256) app_init: Project name:     sta2eth_p4_c6
+I (260) app_init: App version:      692a162
+I (264) app_init: Compile time:     Nov 11 2025 19:11:43
+I (269) app_init: ELF file SHA256:  5e902fbb2...
+I (273) app_init: ESP-IDF:          v6.1-dev-1-gff97953b32
+I (279) efuse_init: Min chip rev:     v0.1
+I (282) efuse_init: Max chip rev:     v1.99
+I (286) efuse_init: Chip rev:         v1.3
+I (290) heap_init: Initializing. RAM available for dynamic allocation:
+I (297) heap_init: At 4FF13580 len 00027A40 (158 KiB): RETENT_RAM
+I (302) heap_init: At 4FF3AFC0 len 00004BF0 (18 KiB): RAM
+I (307) heap_init: At 4FF40000 len 00060000 (384 KiB): RAM
+I (313) heap_init: At 50108080 len 00007F80 (31 KiB): RTCRAM
+I (318) heap_init: At 30100088 len 00001F78 (7 KiB): TCM
+I (324) spi_flash: detected chip: generic
+I (327) spi_flash: flash io: dio
+W (330) spi_flash: Detected size(16384k) larger than the size in the binary image header(2048k). Using the size in the binary image header.
+I (342) host_init: ESP Hosted : Host chip_ip[18]
+I (373) H_API: ESP-Hosted starting. Hosted_Tasks: prio:23, stack: 5120 RPC_task_stack: 5120
+I (373) H_API: ** add_esp_wifi_remote_channels **
+I (375) transport: Add ESP-Hosted channel IF[1]: S[0] Tx[0x4000fde8] Rx[0x4002454e]
+--- 0x4000fde8: transport_drv_sta_tx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_hosted/host/drivers/transport/transport_drv.c:251
+--- 0x4002454e: esp_wifi_remote_channel_rx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_wifi_remote/esp_wifi_remote_net.c:19
+I (382) transport: Add ESP-Hosted channel IF[2]: S[0] Tx[0x4000fd28] Rx[0x4002454e]
+--- 0x4000fd28: transport_drv_ap_tx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_hosted/host/drivers/transport/transport_drv.c:281
+--- 0x4002454e: esp_wifi_remote_channel_rx at F:/esp/output/sta2eth-1/sta2eth/managed_components/espressif__esp_wifi_remote/esp_wifi_remote_net.c:19
+sdio_mempool_create free:195112 min-free:195112 lfb-def:147456 lfb-8bit:147456
+
+I (398) H_SDIO_DRV: sdio_data_to_rx_buf_task started
