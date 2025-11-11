@@ -317,13 +317,14 @@ static esp_err_t init_ethernet(void)
 }
 
 /**
- * Step 2: Wait for PC MAC learning and cleanup
+ * Step 2: Wait for PC MAC learning and complete Ethernet teardown
  * 
- * Complete cleanup of initial Ethernet setup:
- * 1. Remove packet receive callback (prevents packet interception in bridge)
- * 2. Stop Ethernet driver (allows clean netif destruction)
- * 3. Destroy netif and glue
- * 4. Everything will be recreated fresh for bridge
+ * Completely tear down Ethernet to ensure absolutely clean state:
+ * 1. Remove packet receive callback
+ * 2. Stop Ethernet driver
+ * 3. Destroy netif (auto-cleans glue)
+ * 4. Uninstall Ethernet driver completely
+ * 5. Everything will be recreated from scratch for bridge
  */
 static esp_err_t wait_for_pc_mac_and_cleanup(void)
 {
@@ -342,36 +343,40 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
     ESP_LOGI(TAG, "PC MAC learned successfully!");
     
     // CRITICAL: Remove the packet receive callback IMMEDIATELY
-    // If we don't remove it, it will continue intercepting and freeing ALL packets in bridge mode!
     ESP_LOGI(TAG, "Removing MAC learning packet callback...");
     ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, NULL, NULL));
     ESP_LOGI(TAG, "✓ Packet callback removed");
     
-    // Complete cleanup for bridge initialization
-    ESP_LOGI(TAG, "Performing complete Ethernet cleanup for bridge...");
+    // Complete teardown of Ethernet to ensure absolutely clean state
+    ESP_LOGI(TAG, "Performing COMPLETE Ethernet teardown...");
     
-    // Stop link down timer if running
+    // Stop link down timer
     if (s_link_down_timer) {
         esp_timer_stop(s_link_down_timer);
+        esp_timer_delete(s_link_down_timer);
+        s_link_down_timer = NULL;
     }
     
-    // Unregister event handlers BEFORE stopping driver
+    // Unregister event handlers
     ESP_ERROR_CHECK(esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler));
     ESP_LOGI(TAG, "✓ Event handlers unregistered");
     
-    // Stop Ethernet driver to allow clean netif/glue destruction
+    // Stop Ethernet driver
     ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
     ESP_LOGI(TAG, "✓ Ethernet driver stopped");
     
-    // Destroy netif - this automatically cleans up the associated glue
-    // The glue ownership was transferred to netif when we called esp_netif_attach()
-    // So esp_netif_destroy() will handle glue cleanup internally
+    // Destroy netif (auto-cleans glue)
     esp_netif_destroy(s_eth_netif);
     s_eth_netif = NULL;
-    s_eth_glue = NULL;  // Clear pointer (actual glue was freed by esp_netif_destroy)
-    ESP_LOGI(TAG, "✓ Ethernet netif destroyed (glue automatically cleaned up)");
+    s_eth_glue = NULL;
+    ESP_LOGI(TAG, "✓ Ethernet netif destroyed");
     
-    ESP_LOGI(TAG, "Ethernet cleanup complete - ready for clean bridge init");
+    // COMPLETE teardown: Uninstall Ethernet driver
+    ESP_ERROR_CHECK(esp_eth_driver_uninstall(s_eth_handle));
+    s_eth_handle = NULL;
+    ESP_LOGI(TAG, "✓ Ethernet driver completely uninstalled");
+    
+    ESP_LOGI(TAG, "Complete Ethernet teardown finished - will reinitialize from scratch");
     
     return ESP_OK;
 }
@@ -500,16 +505,14 @@ static esp_err_t init_wifi_with_pc_mac(void)
 }
 
 /**
- * Reinitialize Ethernet for bridge
+ * Reinitialize Ethernet COMPLETELY from scratch for bridge
  * 
- * Create fresh Ethernet netif and glue for bridge operation.
- * Previous netif/glue were completely destroyed in wait_for_pc_mac_and_cleanup().
- * 
- * Following official ESP-IDF bridge example pattern:
- * - Create netif
- * - Create and attach new glue
- * - Configure (IP, promiscuous mode, event handlers)
- * - Do NOT start driver yet (will be started in create_bridge after bridge setup)
+ * Previous Ethernet was COMPLETELY torn down (driver uninstalled).
+ * Now recreate everything fresh:
+ * 1. Reinitialize Ethernet driver
+ * 2. Create netif
+ * 3. Create glue
+ * 4. Attach and configure
  * 
  * Returns:
  * - ESP_OK: Ethernet ready for bridge
@@ -517,9 +520,22 @@ static esp_err_t init_wifi_with_pc_mac(void)
  */
 static esp_err_t reinit_ethernet_for_bridge(void)
 {
-    ESP_LOGI(TAG, "Re-initializing Ethernet for bridge...");
+    ESP_LOGI(TAG, "Reinitializing Ethernet COMPLETELY from scratch...");
     
-    // Create clean Ethernet netif
+    // Reinitialize Ethernet driver from scratch
+    uint8_t eth_port_cnt = 0;
+    esp_eth_handle_t *eth_handles;
+    esp_err_t ret = ethernet_init_all(&eth_handles, &eth_port_cnt);
+    if (ret != ESP_OK || eth_port_cnt == 0) {
+        ESP_LOGE(TAG, "Failed to reinitialize Ethernet driver");
+        return ESP_FAIL;
+    }
+    
+    s_eth_handle = eth_handles[0];
+    free(eth_handles);
+    ESP_LOGI(TAG, "✓ Ethernet driver reinitialized");
+    
+    // Create clean Ethernet netif for bridge
     esp_netif_inherent_config_t eth_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
     eth_cfg.flags = 0;  // Flags must be 0 for bridged ports
     esp_netif_config_t netif_cfg = {
@@ -533,7 +549,6 @@ static esp_err_t reinit_ethernet_for_bridge(void)
     }
     
     // Create fresh glue and attach to netif
-    // Note: After esp_netif_attach(), glue ownership transfers to netif
     s_eth_glue = esp_eth_new_netif_glue(s_eth_handle);
     if (!s_eth_glue) {
         ESP_LOGE(TAG, "Failed to create Ethernet glue");
@@ -542,8 +557,7 @@ static esp_err_t reinit_ethernet_for_bridge(void)
         return ESP_FAIL;
     }
     
-    // Attach glue to netif (glue ownership transfers to netif)
-    esp_err_t ret = esp_netif_attach(s_eth_netif, s_eth_glue);
+    ret = esp_netif_attach(s_eth_netif, s_eth_glue);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to attach: %s", esp_err_to_name(ret));
         esp_netif_destroy(s_eth_netif);
@@ -551,9 +565,9 @@ static esp_err_t reinit_ethernet_for_bridge(void)
         s_eth_glue = NULL;
         return ret;
     }
-    ESP_LOGI(TAG, "✓ Ethernet netif attached to new glue");
+    ESP_LOGI(TAG, "✓ Ethernet netif attached to glue");
     
-    // Configure static IP (for interface identification)
+    // Configure static IP
     esp_netif_dhcpc_stop(s_eth_netif);
     esp_netif_ip_info_t eth_ip_info = {
         .ip = { .addr = ESP_IP4TOADDR(169, 254, 0, 3) },
@@ -566,7 +580,7 @@ static esp_err_t reinit_ethernet_for_bridge(void)
         return ret;
     }
     
-    // Enable promiscuous mode (required for bridge MAC forwarding)
+    // Enable promiscuous mode (required for bridge)
     bool promiscuous = true;
     ret = esp_eth_ioctl(s_eth_handle, ETH_CMD_S_PROMISCUOUS, &promiscuous);
     if (ret != ESP_OK) {
@@ -574,7 +588,18 @@ static esp_err_t reinit_ethernet_for_bridge(void)
         return ret;
     }
     
-    // Re-register event handlers
+    // Recreate link down timer
+    const esp_timer_create_args_t timer_args = {
+        .callback = &link_down_timer_callback,
+        .name = "link_down_timer"
+    };
+    ret = esp_timer_create(&timer_args, &s_link_down_timer);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create timer: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // Register event handlers
     ret = esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register events: %s", esp_err_to_name(ret));
@@ -582,10 +607,9 @@ static esp_err_t reinit_ethernet_for_bridge(void)
     }
     
     // NOTE: Do NOT start Ethernet here!
-    // Following official ESP-IDF bridge example:
-    // Ethernet will be started in create_bridge() after bridge is configured
+    // Will be started in create_bridge() after bridge is configured
     
-    ESP_LOGI(TAG, "Ethernet re-initialized for bridge (not started yet)");
+    ESP_LOGI(TAG, "Ethernet completely reinitialized (not started yet)");
     return ESP_OK;
 }
 
