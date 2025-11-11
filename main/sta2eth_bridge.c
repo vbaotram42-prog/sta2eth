@@ -365,13 +365,20 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
     ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
     ESP_LOGI(TAG, "✓ Ethernet driver stopped");
     
-    // Destroy netif (auto-cleans glue)
+    // Critical cleanup order to avoid "reference in use" error:
+    // 1. Destroy netif first (this releases glue's internal references)
     esp_netif_destroy(s_eth_netif);
     s_eth_netif = NULL;
-    s_eth_glue = NULL;
     ESP_LOGI(TAG, "✓ Ethernet netif destroyed");
     
-    // COMPLETE teardown: Uninstall Ethernet driver
+    // 2. Delete glue explicitly (releases driver reference)
+    if (s_eth_glue) {
+        esp_eth_del_netif_glue(s_eth_glue);
+        s_eth_glue = NULL;
+        ESP_LOGI(TAG, "✓ Ethernet glue deleted");
+    }
+    
+    // 3. Now driver should have no references, can uninstall
     ESP_ERROR_CHECK(esp_eth_driver_uninstall(s_eth_handle));
     s_eth_handle = NULL;
     ESP_LOGI(TAG, "✓ Ethernet driver completely uninstalled");
