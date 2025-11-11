@@ -442,8 +442,14 @@ static esp_err_t connect_wifi(void)
         return err;
     }
     
-    // Note: Connection will be initiated by WIFI_EVENT_STA_START event handler
-    // This follows the standard ESP-IDF WiFi station pattern
+    // Start WiFi to initiate connection
+    // WIFI_EVENT_STA_START will trigger connection attempt in event handler
+    ESP_LOGI(TAG, "Starting WiFi to initiate connection...");
+    err = esp_wifi_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start WiFi: %s", esp_err_to_name(err));
+        return err;
+    }
     
     // Wait for connection result (success or failure after retries)
     // Following ESP-IDF example: wait for either WIFI_CONNECTED_BIT or WIFI_FAIL_BIT
@@ -554,20 +560,14 @@ static esp_err_t create_bridge(void)
     ESP_ERROR_CHECK(esp_netif_attach(s_br_netif, br_glue));
     ESP_LOGI(TAG, "Bridge glue attached successfully");
     
-    // NOW start BOTH WiFi and Ethernet drivers (following ESP-IDF bridge example pattern)
+    // NOW start Ethernet driver (following ESP-IDF bridge example pattern)
     // This must be done AFTER bridge glue is attached, so bridge event handlers
-    // can intercept start events and set up packet forwarding properly
-    ESP_LOGI(TAG, "Starting WiFi and Ethernet drivers with bridge fully configured...");
+    // can intercept ETHERNET_EVENT_START and set up packet forwarding properly
+    // NOTE: WiFi is ALREADY started in connect_wifi() - do NOT start it again!
+    ESP_LOGI(TAG, "Starting Ethernet driver with bridge fully configured...");
     
-    // Start WiFi first
-    ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "WiFi started");
-    
-    // Then start Ethernet
     ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
-    ESP_LOGI(TAG, "Ethernet started");
-    
-    ESP_LOGI(TAG, "Both interfaces started - bridge is now operational");
+    ESP_LOGI(TAG, "Ethernet started - bridge is now operational");
     
     // Note: Bridge operates at L2, no IP event handling needed
     // PC will obtain IP directly from router via transparent bridging
