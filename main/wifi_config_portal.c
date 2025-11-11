@@ -374,6 +374,17 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
 /**
  * Start WiFi configuration portal
+ * 
+ * Prerequisites (must be met by caller):
+ * - NVS initialized
+ * - Event loop created  
+ * - ESP-Hosted ready (C6 responding)
+ * 
+ * This function checks:
+ * - WiFi Remote initialization succeeds
+ * - Netif creation succeeds
+ * 
+ * @return ESP_OK on success, error code on failure
  */
 esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, int fail_bit)
 {
@@ -382,29 +393,40 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     s_event_flags = flags;
     s_success_bit = success_bit;
     
-    // Create AP netif
+    // Create netifs
     s_ap_netif = esp_netif_create_default_wifi_ap();
+    if (!s_ap_netif) {
+        ESP_LOGE(TAG, "Failed to create AP netif");
+        return ESP_FAIL;
+    }
     
-    // Create STA netif for scanning and testing connection
-    // Note: We don't need to store the netif pointer - it's automatically registered
-    (void)esp_netif_create_default_wifi_sta();
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    if (!sta_netif) {
+        ESP_LOGE(TAG, "Failed to create STA netif");
+        return ESP_FAIL;
+    }
     
-    // Initialize WiFi in APSTA mode (AP + STA coexistence)
-    // This allows C6 to run SoftAP while also scanning and testing connections
+    // Initialize WiFi - check if C6 is responding
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_remote_init(&cfg));
+    esp_err_t ret = esp_wifi_remote_init(&cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi init failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "C6 may not be responding");
+        return ret;
+    }
     
     // Register event handler
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_REMOTE_EVENT, ESP_EVENT_ANY_ID,
-                                               wifi_event_handler, NULL));
+    ret = esp_event_handler_register(WIFI_REMOTE_EVENT, ESP_EVENT_ANY_ID,
+                                     wifi_event_handler, NULL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler: %s", esp_err_to_name(ret));
+        return ret;
+    }
     
-    // Clear any stored credentials on C6 to ensure clean state
-    ESP_LOGI(TAG, "Clearing any stored credentials on C6");
+    // Set storage and clear any old config
     esp_wifi_set_storage(WIFI_STORAGE_FLASH);
     wifi_config_t empty_cfg = {0};
     esp_wifi_set_config(WIFI_IF_STA, &empty_cfg);
-    
-    // Set storage to RAM only - credentials will be stored on P4's NVS
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
     
     // Configure AP
@@ -419,14 +441,25 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
         },
     };
     
-    // Use APSTA mode to allow scanning and connection testing while running SoftAP
-    // This is essential for WiFi configuration portal functionality
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    ret = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set mode: %s", esp_err_to_name(ret));
+        return ret;
+    }
     
-    ESP_LOGI(TAG, "SoftAP started in APSTA mode: SSID=%s", SOFTAP_SSID);
-    ESP_LOGI(TAG, "STA interface enabled for WiFi scanning and testing");
+    ret = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set AP config: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    ret = esp_wifi_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start WiFi: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    ESP_LOGI(TAG, "SoftAP started: SSID=%s", SOFTAP_SSID);
     
     // Start web server
     start_webserver();
@@ -436,9 +469,8 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     start_dns_server(&dns_config);
     
     ESP_LOGI(TAG, "Configuration portal ready:");
-    ESP_LOGI(TAG, "  1. Connect phone to WiFi: %s (no password)", SOFTAP_SSID);
-    ESP_LOGI(TAG, "  2. Browser will auto-open or go to: http://192.168.4.1");
-    ESP_LOGI(TAG, "  3. Select your WiFi network and enter password");
+    ESP_LOGI(TAG, "  1. Connect to WiFi: %s", SOFTAP_SSID);
+    ESP_LOGI(TAG, "  2. Go to: http://192.168.4.1");
     
     return ESP_OK;
 }
