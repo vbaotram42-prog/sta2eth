@@ -334,13 +334,14 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
         esp_timer_stop(s_link_down_timer);
     }
     
-    // Stop Ethernet
-    ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
-    ESP_LOGI(TAG, "Ethernet stopped");
-    
-    // Unregister event handlers
+    // CRITICAL: Unregister event handlers BEFORE stopping Ethernet
+    // This prevents the LINK_DOWN event from esp_eth_stop() from starting the timer
     ESP_ERROR_CHECK(esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler));
     ESP_LOGI(TAG, "Ethernet event handlers unregistered");
+    
+    // Stop Ethernet (will trigger LINK_DOWN event, but handler is already unregistered)
+    ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
+    ESP_LOGI(TAG, "Ethernet stopped");
     
     // Destroy Ethernet netif (will be recreated clean for bridge)
     esp_netif_destroy(s_eth_netif);
