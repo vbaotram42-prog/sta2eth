@@ -181,6 +181,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             xEventGroupClearBits(s_event_flags, WIFI_DISCONNECTED_BIT);
             break;
         case WIFI_EVENT_STA_DISCONNECTED:
+            // CRITICAL: Re-set MAC address before reconnection
+            // MAC is stored in C6's RAM (WIFI_STORAGE_RAM) and may be lost on disconnect/reset
+            // This ensures PC MAC is maintained across reconnections
+            if (s_mac_learned) {
+                ESP_LOGI(TAG, "Re-setting WiFi MAC to PC MAC before reconnect: %02x:%02x:%02x:%02x:%02x:%02x",
+                         s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
+                         s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
+                esp_wifi_set_mac(WIFI_IF_STA, s_pc_mac);
+            }
+            
             if (s_wifi_retry_num < WIFI_MAXIMUM_RETRY) {
                 esp_wifi_remote_connect();
                 s_wifi_retry_num++;
