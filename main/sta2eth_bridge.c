@@ -358,26 +358,27 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
         s_link_down_timer = NULL;
     }
     
-    // Unregister event handlers
+    // IMPORTANT: Unregister event handlers FIRST (before netif destroy)
     ESP_ERROR_CHECK(esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler));
     ESP_LOGI(TAG, "✓ Event handlers unregistered");
     
-    // Stop Ethernet driver (but keep it installed for reuse)
-    ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
-    ESP_LOGI(TAG, "✓ Ethernet driver stopped (still installed)");
-    
-    // Cleanup order to properly release resources:
-    // 1. Destroy netif first (releases glue's internal references)
+    // CRITICAL ORDER: Destroy netif BEFORE stopping driver
+    // When netif is destroyed, it needs to clean up MAC filters, which requires driver to be running
     esp_netif_destroy(s_eth_netif);
     s_eth_netif = NULL;
     ESP_LOGI(TAG, "✓ Ethernet netif destroyed");
     
-    // 2. Delete glue explicitly (releases driver reference)
+    // Delete glue explicitly (must be done after netif destroy)
     if (s_eth_glue) {
         esp_eth_del_netif_glue(s_eth_glue);
         s_eth_glue = NULL;
         ESP_LOGI(TAG, "✓ Ethernet glue deleted");
     }
+    
+    // LAST: Stop Ethernet driver (after netif/glue are cleaned up)
+    // Driver stays installed for reuse - we only stop it
+    ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
+    ESP_LOGI(TAG, "✓ Ethernet driver stopped (still installed)")
     
     // NOTE: Driver remains installed (s_eth_handle valid) - will be reused in bridge mode
     ESP_LOGI(TAG, "Ethernet cleanup complete - driver ready for reuse");
