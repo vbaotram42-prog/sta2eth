@@ -84,11 +84,12 @@ static void link_down_timer_callback(void *arg)
 }
 
 /**
- * Ethernet packet receive callback for MAC learning (ONE-TIME ONLY)
- * This callback is removed immediately after learning the first packet
+ * Ethernet packet receive callback for MAC learning
+ * This intercepts packets temporarily to learn MAC, then forwards to netif
  */
 static esp_err_t eth_packet_receive_cb(esp_eth_handle_t hdl, uint8_t *buffer, uint32_t length, void *priv)
 {
+    // Learn MAC from first packet
     if (!s_mac_learned && length >= 14) {
         // Extract source MAC from Ethernet frame (bytes 6-11)
         memcpy(s_pc_mac, buffer + 6, 6);
@@ -101,11 +102,18 @@ static esp_err_t eth_packet_receive_cb(esp_eth_handle_t hdl, uint8_t *buffer, ui
                  s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
         ESP_LOGI(TAG, "===========================================");
         
-        // CRITICAL: Signal that MAC is learned so callback can be removed
+        // Signal that MAC is learned
         xEventGroupSetBits(s_event_flags, MAC_LEARNED_BIT);
     }
     
-    // Free the buffer - we're just learning MAC, not forwarding yet
+    // CRITICAL: Always forward packets to netif so bridge can work
+    // The netif's receive function will pass packets to the bridge
+    esp_netif_t *netif = (esp_netif_t *)priv;
+    if (netif) {
+        return esp_netif_receive(netif, buffer, length, NULL);
+    }
+    
+    // Fallback: free buffer if netif not available
     free(buffer);
     return ESP_OK;
 }
@@ -282,9 +290,12 @@ static esp_err_t init_ethernet(void)
     ESP_ERROR_CHECK(esp_eth_ioctl(s_eth_handle, ETH_CMD_S_PROMISCUOUS, &promiscuous));
     ESP_LOGI(TAG, "Ethernet promiscuous mode enabled for MAC learning");
     
-    // Register packet receive callback for MAC learning (will be removed after first packet)
-    ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, eth_packet_receive_cb, NULL));
-    ESP_LOGI(TAG, "MAC learning callback registered (one-time use)");
+    // Register packet receive callback for MAC learning
+    // Pass netif as priv so callback can forward packets
+    // CRITICAL: This overrides the netif glue's input path, but our callback
+    // forwards packets to esp_netif_receive() to maintain functionality
+    ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, eth_packet_receive_cb, s_eth_netif));
+    ESP_LOGI(TAG, "MAC learning callback registered (forwards packets to netif)");
     
     // Register event handlers
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
@@ -315,12 +326,15 @@ static esp_err_t wait_for_pc_mac(void)
     
     ESP_LOGI(TAG, "PC MAC learned successfully!");
     
-    // CRITICAL: Remove MAC learning callback immediately
-    // We only need to learn MAC once. After this, the bridge will handle all packet forwarding.
-    // Don't restore any input path here - the bridge netif glue will set it up when created.
-    ESP_LOGI(TAG, "Removing MAC learning callback (one-time learning complete)");
-    ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, NULL, NULL));
-    ESP_LOGI(TAG, "Callback removed. Bridge will handle packet forwarding after creation.");
+    // CRITICAL: Keep MAC learning callback active until bridge is created
+    // The callback is idempotent (only learns once, then just frees buffers)
+    // When the bridge is created and attached via esp_netif_attach(), the
+    // esp_eth_post_attach() function will automatically call
+    // esp_eth_update_input_path_info() to restore the proper input path
+    // that forwards packets to the bridge. If we remove the callback now,
+    // Ethernet input path becomes NULL and ALL packets are dropped.
+    ESP_LOGI(TAG, "Keeping MAC learning callback active until bridge is created");
+    ESP_LOGI(TAG, "Bridge will automatically restore proper packet forwarding path");
     
     return ESP_OK;
 }
