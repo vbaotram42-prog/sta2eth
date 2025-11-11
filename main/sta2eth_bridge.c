@@ -319,6 +319,11 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
     // This ensures both netifs are absolutely clean when bridge is created
     ESP_LOGI(TAG, "Deinitializing Ethernet to ensure clean state for bridge...");
     
+    // Stop link down timer if it's running (could have started if link went down briefly)
+    if (s_link_down_timer) {
+        esp_timer_stop(s_link_down_timer);
+    }
+    
     // Stop Ethernet
     ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
     ESP_LOGI(TAG, "Ethernet stopped");
@@ -332,7 +337,7 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
     s_eth_netif = NULL;
     ESP_LOGI(TAG, "Ethernet netif destroyed");
     
-    // Driver and timer will be reinitialized later
+    // Driver and timer remain valid for re-initialization
     ESP_LOGI(TAG, "Ethernet deinitialization complete - ready for clean bridge init");
     
     return ESP_OK;
