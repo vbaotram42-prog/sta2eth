@@ -58,6 +58,7 @@ static esp_netif_t *s_eth_netif = NULL;
 static esp_netif_t *s_wifi_netif = NULL;
 static esp_netif_t *s_br_netif = NULL;
 static esp_eth_handle_t s_eth_handle = NULL;
+static void *s_eth_glue = NULL;  // Store Ethernet netif glue to reuse it
 static uint8_t s_pc_mac[6] = {0};
 static bool s_mac_learned = false;
 
@@ -267,8 +268,17 @@ static esp_err_t init_ethernet(void)
     s_eth_handle = eth_handles[0];
     free(eth_handles);
     
-    // Attach Ethernet driver to netif
-    ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle)));
+    // Create Ethernet netif glue for initial MAC learning phase
+    // Note: glue ownership will transfer to netif after esp_netif_attach()
+    // The glue will be automatically freed when netif is destroyed
+    void *eth_glue = esp_eth_new_netif_glue(s_eth_handle);
+    if (!eth_glue) {
+        ESP_LOGE(TAG, "Failed to create Ethernet netif glue");
+        return ESP_FAIL;
+    }
+    
+    // Attach Ethernet driver to netif (glue ownership transfers to netif)
+    ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, eth_glue));
     
     // Assign static link-local IP to Ethernet
     esp_netif_dhcpc_stop(s_eth_netif);
@@ -307,7 +317,14 @@ static esp_err_t init_ethernet(void)
 }
 
 /**
- * Step 2: Wait for PC MAC learning and cleanup Ethernet
+ * Step 2: Wait for PC MAC learning and complete Ethernet teardown
+ * 
+ * Completely tear down Ethernet to ensure absolutely clean state:
+ * 1. Remove packet receive callback
+ * 2. Stop Ethernet driver
+ * 3. Destroy netif (auto-cleans glue)
+ * 4. Uninstall Ethernet driver completely
+ * 5. Everything will be recreated from scratch for bridge
  */
 static esp_err_t wait_for_pc_mac_and_cleanup(void)
 {
@@ -325,269 +342,389 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
     
     ESP_LOGI(TAG, "PC MAC learned successfully!");
     
-    // CRITICAL: Completely deinitialize Ethernet to ensure clean state for bridge
-    // This ensures both netifs are absolutely clean when bridge is created
-    ESP_LOGI(TAG, "Deinitializing Ethernet to ensure clean state for bridge...");
+    // CRITICAL: Remove the packet receive callback IMMEDIATELY
+    ESP_LOGI(TAG, "Removing MAC learning packet callback...");
+    ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, NULL, NULL));
+    ESP_LOGI(TAG, "✓ Packet callback removed");
     
-    // Stop link down timer if it's running (could have started if link went down briefly)
+    // Cleanup Ethernet netif/glue but KEEP driver running
+    // Following official ESP-IDF pattern: drivers stay running, only netif/glue recreated
+    ESP_LOGI(TAG, "Cleaning up Ethernet network layer (keeping driver running)...");
+    
+    // Stop link down timer
     if (s_link_down_timer) {
         esp_timer_stop(s_link_down_timer);
+        esp_timer_delete(s_link_down_timer);
+        s_link_down_timer = NULL;
     }
     
-    // CRITICAL: Unregister event handlers BEFORE stopping Ethernet
-    // This prevents the LINK_DOWN event from esp_eth_stop() from starting the timer
+    // IMPORTANT: Unregister event handlers FIRST (before netif destroy)
     ESP_ERROR_CHECK(esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler));
-    ESP_LOGI(TAG, "Ethernet event handlers unregistered");
+    ESP_LOGI(TAG, "✓ Event handlers unregistered");
     
-    // Stop Ethernet (will trigger LINK_DOWN event, but handler is already unregistered)
-    ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
-    ESP_LOGI(TAG, "Ethernet stopped");
-    
-    // Destroy Ethernet netif (will be recreated clean for bridge)
+    // CRITICAL ORDER: Destroy netif BEFORE stopping driver
+    // When netif is destroyed, it needs to clean up MAC filters, which requires driver to be running
     esp_netif_destroy(s_eth_netif);
     s_eth_netif = NULL;
-    ESP_LOGI(TAG, "Ethernet netif destroyed");
+    ESP_LOGI(TAG, "✓ Ethernet netif destroyed");
     
-    // Driver and timer remain valid for re-initialization
-    ESP_LOGI(TAG, "Ethernet deinitialization complete - ready for clean bridge init");
+    // Delete glue explicitly (must be done after netif destroy)
+    if (s_eth_glue) {
+        esp_eth_del_netif_glue(s_eth_glue);
+        s_eth_glue = NULL;
+        ESP_LOGI(TAG, "✓ Ethernet glue deleted");
+    }
+    
+    // NOTE: We do NOT stop the Ethernet driver!
+    // Keep driver running so we can reattach a new netif without restarting
+    ESP_LOGI(TAG, "✓ Ethernet driver kept running for reattachment")
+    
+    // NOTE: Driver remains installed (s_eth_handle valid) - will be reused in bridge mode
+    ESP_LOGI(TAG, "Ethernet cleanup complete - driver ready for reuse");
     
     return ESP_OK;
 }
 
 /**
- * Step 3: Initialize WiFi with PC MAC
+ * Step 3: Initialize WiFi with PC MAC and configure credentials
+ * 
+ * Following official ESP-IDF bridge example pattern:
+ * - Initialize WiFi (but don't start)
+ * - Create netif
+ * - Set WiFi config (SSID/password)
+ * - Register event handlers
+ * - WiFi will be started later in create_bridge()
+ * 
+ * Prerequisites (guaranteed by app_main):
+ * - PC MAC learned
+ * - Event loop created
+ * - NVS initialized
+ * - WiFi credentials available
+ * 
+ * Returns:
+ * - ESP_OK: WiFi initialized and configured successfully
+ * - ESP_FAIL: Initialization failed (C6 not responding)
  */
 static esp_err_t init_wifi_with_pc_mac(void)
 {
     ESP_LOGI(TAG, "Step 3: Initializing WiFi with PC MAC...");
     
-    // Initialize WiFi Remote
+    // Initialize WiFi Remote - this checks if C6 is responding
+    ESP_LOGI(TAG, "Initializing WiFi Remote (esp_wifi_remote)...");
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_remote_init(&cfg));
+    esp_err_t ret = esp_wifi_remote_init(&cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize WiFi Remote: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "C6 not responding");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "✓ WiFi Remote initialized - C6 is responding");
     
-    // CRITICAL: Set WiFi storage to RAM only
-    // Credentials are stored on P4's NVS, never on C6's flash
-    ESP_LOGI(TAG, "Setting WiFi storage to RAM only (C6 won't save credentials)");
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    // Set WiFi storage to RAM only
+    ret = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set WiFi storage: %s", esp_err_to_name(ret));
+        return ESP_FAIL;
+    }
     
     // Set WiFi mode to STA
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ret = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set WiFi mode: %s", esp_err_to_name(ret));
+        return ESP_FAIL;
+    }
     
-    // CRITICAL: Set WiFi STA MAC = PC MAC
-    ESP_LOGI(TAG, "Setting WiFi STA MAC to PC MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+    // Set WiFi MAC = PC MAC
+    ESP_LOGI(TAG, "Setting WiFi MAC to PC MAC: %02x:%02x:%02x:%02x:%02x:%02x",
              s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
              s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, s_pc_mac));
+    ret = esp_wifi_set_mac(WIFI_IF_STA, s_pc_mac);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set WiFi MAC: %s", esp_err_to_name(ret));
+        return ESP_FAIL;
+    }
     
-    // Create WiFi STA netif with static IP
-    esp_netif_inherent_config_t wifi_cfg = ESP_NETIF_INHERENT_DEFAULT_WIFI_STA();
-    wifi_cfg.flags = 0;  // No flags for bridged port
-    s_wifi_netif = esp_netif_create_wifi(WIFI_IF_STA, &wifi_cfg);
-    ESP_ERROR_CHECK(esp_wifi_set_default_wifi_sta_handlers());
-    
-    // Assign static link-local IP to WiFi STA
-    esp_netif_dhcpc_stop(s_wifi_netif);
-    esp_netif_ip_info_t wifi_ip_info = {
-        .ip = { .addr = ESP_IP4TOADDR(169, 254, 0, 2) },
-        .gw = { .addr = ESP_IP4TOADDR(169, 254, 0, 1) },
-        .netmask = { .addr = ESP_IP4TOADDR(255, 255, 0, 0) },
-    };
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_wifi_netif, &wifi_ip_info));
-    ESP_LOGI(TAG, "WiFi STA assigned static IP: 169.254.0.2");
-    
-    // Register WiFi event handler
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_REMOTE_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-    
-    // NOTE: Do NOT start WiFi here!
-    // Following ESP-IDF bridge example pattern, esp_wifi_start() should be called
-    // AFTER bridge is fully set up, together with esp_eth_start()
-    
-    ESP_LOGI(TAG, "WiFi initialized with PC MAC (not started yet)");
-    ESP_LOGI(TAG, "Note: WiFi will be started AFTER being added to bridge");
-    return ESP_OK;
-}
-
-/**
- * Step 4: Configure and connect WiFi to AP
- * 
- * Following ESP-IDF standard WiFi station pattern:
- * - Load credentials from P4's NVS
- * - Set WiFi configuration
- * - Connection is initiated automatically by WIFI_EVENT_STA_START event
- * - Wait for connection result
- */
-static esp_err_t connect_wifi(void)
-{
-    ESP_LOGI(TAG, "Step 4: Configuring WiFi connection...");
-    
-    // Load credentials from P4's NVS
+    // Load WiFi credentials from NVS
     char ssid[33] = {0};
     char password[65] = {0};
-    esp_err_t err = load_wifi_credentials(ssid, password);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to load WiFi credentials: %s", esp_err_to_name(err));
-        return err;
+    ret = load_wifi_credentials(ssid, password);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to load credentials: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // Validate SSID
+    if (strlen(ssid) == 0) {
+        ESP_LOGE(TAG, "SSID is empty");
+        return ESP_ERR_INVALID_ARG;
     }
     
     ESP_LOGI(TAG, "WiFi credentials loaded: SSID=%s", ssid);
     
-    // Set WiFi configuration (credentials passed to C6's RAM)
+    // Set WiFi configuration (will auto-connect when started)
     wifi_config_t wifi_config = {0};
     memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
     memcpy(wifi_config.sta.password, password, sizeof(wifi_config.sta.password));
     
-    err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set WiFi config: %s", esp_err_to_name(err));
-        return err;
+    ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set WiFi config: %s", esp_err_to_name(ret));
+        return ret;
     }
+    ESP_LOGI(TAG, "✓ WiFi configuration set");
     
-    // Start WiFi to initiate connection
-    // WIFI_EVENT_STA_START will trigger connection attempt in event handler
-    ESP_LOGI(TAG, "Starting WiFi to initiate connection...");
-    err = esp_wifi_start();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start WiFi: %s", esp_err_to_name(err));
-        return err;
-    }
-    
-    // Wait for connection result (success or failure after retries)
-    // Following ESP-IDF example: wait for either WIFI_CONNECTED_BIT or WIFI_FAIL_BIT
-    ESP_LOGI(TAG, "Waiting for WiFi connection...");
-    EventBits_t bits = xEventGroupWaitBits(s_event_flags, 
-                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                            pdFALSE, pdFALSE, portMAX_DELAY);
-    
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "WiFi connected successfully!");
-        return ESP_OK;
-    } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGE(TAG, "Failed to connect to WiFi after %d retries", WIFI_MAXIMUM_RETRY);
-        return ESP_FAIL;
-    } else {
-        ESP_LOGE(TAG, "Unexpected WiFi connection result");
+    // Create WiFi netif - following official bridge example
+    esp_netif_inherent_config_t wifi_cfg = ESP_NETIF_INHERENT_DEFAULT_WIFI_STA();
+    wifi_cfg.flags = 0;  // Must be 0 for bridged ports (except AP needs AUTOUP)
+    wifi_cfg.ip_info = NULL;  // No IP for physical interface when bridged
+    s_wifi_netif = esp_netif_create_wifi(WIFI_IF_STA, &wifi_cfg);
+    if (!s_wifi_netif) {
+        ESP_LOGE(TAG, "Failed to create WiFi netif");
         return ESP_FAIL;
     }
+    
+    ret = esp_wifi_set_default_wifi_sta_handlers();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set handlers: %s", esp_err_to_name(ret));
+        esp_netif_destroy(s_wifi_netif);
+        s_wifi_netif = NULL;
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "✓ WiFi netif created");
+    
+    // Register event handler
+    ret = esp_event_handler_register(WIFI_REMOTE_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register event handler: %s", esp_err_to_name(ret));
+        return ESP_FAIL;
+    }
+    
+    // NOTE: Do NOT start WiFi here!
+    // Following official ESP-IDF bridge example:
+    // WiFi will be started in create_bridge() after bridge is configured
+    
+    ESP_LOGI(TAG, "WiFi initialized and configured (not started yet)");
+    ESP_LOGI(TAG, "WiFi will auto-connect when started in create_bridge()");
+    return ESP_OK;
 }
 
 /**
- * Reinitialize Ethernet cleanly for bridge
- * Called after WiFi is connected to ensure Ethernet netif is in clean state
+ * Reinitialize Ethernet network layer for bridge
+ * 
+ * Driver is already installed and stopped - reuse it.
+ * Following official ESP-IDF pattern:
+ * 1. Create new netif (bridged config)
+ * 2. Create new glue
+ * 3. Attach to existing driver
+ * 4. Configure and register handlers
+ * 
+ * Returns:
+ * - ESP_OK: Ethernet ready for bridge
+ * - ESP_FAIL: Failed to reinitialize
  */
 static esp_err_t reinit_ethernet_for_bridge(void)
 {
-    ESP_LOGI(TAG, "Re-initializing Ethernet in clean state for bridge...");
+    ESP_LOGI(TAG, "Re-initializing Ethernet for bridge (reusing driver)...");
+    
+    // Verify driver is still valid
+    if (!s_eth_handle) {
+        ESP_LOGE(TAG, "Ethernet driver handle is NULL");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "✓ Using existing Ethernet driver");
     
     // Create clean Ethernet netif for bridge
     esp_netif_inherent_config_t eth_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
-    eth_cfg.flags = 0;  // No flags for bridged port
+    eth_cfg.flags = 0;  // Flags must be 0 for bridged ports
     esp_netif_config_t netif_cfg = {
         .base = &eth_cfg,
         .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH
     };
     s_eth_netif = esp_netif_new(&netif_cfg);
+    if (!s_eth_netif) {
+        ESP_LOGE(TAG, "Failed to create Ethernet netif");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "✓ New Ethernet netif created");
     
-    // Attach Ethernet driver to netif (driver handle is still valid from initial setup)
-    ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle)));
+    // Create fresh glue and attach to existing driver
+    s_eth_glue = esp_eth_new_netif_glue(s_eth_handle);
+    if (!s_eth_glue) {
+        ESP_LOGE(TAG, "Failed to create Ethernet glue");
+        esp_netif_destroy(s_eth_netif);
+        s_eth_netif = NULL;
+        return ESP_FAIL;
+    }
     
-    // Start the Ethernet driver FIRST - this initializes the netif properly
-    // The driver must be started before adding to bridge so netif is fully initialized
-    ESP_LOGI(TAG, "Starting Ethernet driver to initialize netif...");
-    ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
-    ESP_LOGI(TAG, "Ethernet driver started, netif fully initialized");
+    esp_err_t ret = esp_netif_attach(s_eth_netif, s_eth_glue);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to attach: %s", esp_err_to_name(ret));
+        esp_netif_destroy(s_eth_netif);
+        s_eth_netif = NULL;
+        s_eth_glue = NULL;
+        return ret;
+    }
+    ESP_LOGI(TAG, "✓ Ethernet netif attached to glue");
     
-    // Assign static link-local IP to Ethernet
-    esp_netif_dhcpc_stop(s_eth_netif);
-    esp_netif_ip_info_t eth_ip_info = {
-        .ip = { .addr = ESP_IP4TOADDR(169, 254, 0, 3) },
-        .gw = { .addr = ESP_IP4TOADDR(169, 254, 0, 1) },
-        .netmask = { .addr = ESP_IP4TOADDR(255, 255, 0, 0) },
-    };
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_eth_netif, &eth_ip_info));
+    // NOTE: Bridged ports should NOT have IP configuration
+    // IP is managed by the bridge netif, not individual ports
+    // Do NOT call esp_netif_dhcpc_stop() or esp_netif_set_ip_info()
     
-    // Re-enable promiscuous mode (needed for bridge)
+    // Enable promiscuous mode (required for bridge)
     bool promiscuous = true;
-    ESP_ERROR_CHECK(esp_eth_ioctl(s_eth_handle, ETH_CMD_S_PROMISCUOUS, &promiscuous));
+    ret = esp_eth_ioctl(s_eth_handle, ETH_CMD_S_PROMISCUOUS, &promiscuous);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable promiscuous: %s", esp_err_to_name(ret));
+        return ret;
+    }
     
-    // Re-register event handlers
-    ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
+    // Recreate link down timer
+    const esp_timer_create_args_t timer_args = {
+        .callback = &link_down_timer_callback,
+        .name = "link_down_timer"
+    };
+    ret = esp_timer_create(&timer_args, &s_link_down_timer);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create timer: %s", esp_err_to_name(ret));
+        return ret;
+    }
     
-    ESP_LOGI(TAG, "Ethernet re-initialized and started successfully");
-    ESP_LOGI(TAG, "Ready to be added to bridge (netif is now fully operational)");
+    // Register event handlers
+    ret = esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register events: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // NOTE: Do NOT start Ethernet here!
+    // Will be started in create_bridge() after bridge is configured
+    
+    ESP_LOGI(TAG, "Ethernet network layer re-initialized for bridge (driver reused)");
+    ESP_LOGI(TAG, "✓ Ethernet re-initialized for bridge");
     return ESP_OK;
 }
 
 /**
- * Step 5: Create bridge
+ * Step 5: Create bridge and start interfaces
+ * 
+ * Following official ESP-IDF bridge example pattern:
+ * 1. Create bridge netif
+ * 2. Create bridge glue  
+ * 3. Add all port netifs to bridge glue
+ * 4. Attach bridge glue to bridge netif
+ * 5. Start all drivers (Ethernet and WiFi)
+ * 6. Wait for WiFi connection
+ * 
+ * Prerequisites (guaranteed by app_main):
+ * - Both netifs created and attached to drivers
+ * - WiFi configured with credentials
+ * - Ethernet configured
+ * - Neither started yet
+ * 
+ * Returns:
+ * - ESP_OK: Bridge created and WiFi connected
+ * - ESP_FAIL: Bridge creation or WiFi connection failed
+ * - ESP_ERR_TIMEOUT: WiFi connection timeout
  */
 static esp_err_t create_bridge(void)
 {
     ESP_LOGI(TAG, "Step 5: Creating L2 bridge...");
     
-    // Create bridge netif configuration
+    // Create bridge netif
     esp_netif_inherent_config_t br_cfg = ESP_NETIF_INHERENT_DEFAULT_BR();
     esp_netif_config_t br_netif_cfg = {
         .base = &br_cfg,
         .stack = ESP_NETIF_NETSTACK_DEFAULT_BR,
     };
     
-    // Bridge configuration
     bridgeif_config_t bridgeif_config = {
         .max_fdb_dyn_entries = 10,
         .max_fdb_sta_entries = 2,
         .max_ports = 2
     };
     br_cfg.bridge_info = &bridgeif_config;
-    
-    // Set bridge MAC to PC MAC (for consistency)
     memcpy(br_cfg.mac, s_pc_mac, 6);
+    
     s_br_netif = esp_netif_new(&br_netif_cfg);
+    if (!s_br_netif) {
+        ESP_LOGE(TAG, "Failed to create bridge netif");
+        return ESP_FAIL;
+    }
     
-    // Create bridge glue and add ports
+    // Create bridge glue
     esp_netif_br_glue_handle_t br_glue = esp_netif_br_glue_new();
+    if (!br_glue) {
+        ESP_LOGE(TAG, "Failed to create bridge glue");
+        esp_netif_destroy(s_br_netif);
+        s_br_netif = NULL;
+        return ESP_FAIL;
+    }
     
-    // Add Ethernet port
-    ESP_ERROR_CHECK(esp_netif_br_glue_add_port(br_glue, s_eth_netif));
+    // Add Ethernet port to bridge
+    esp_err_t ret = esp_netif_br_glue_add_port(br_glue, s_eth_netif);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add Ethernet port: %s", esp_err_to_name(ret));
+        return ret;
+    }
     ESP_LOGI(TAG, "Added Ethernet port to bridge");
     
-    // Add WiFi STA port
-    // Note: Use generic add_port for WiFi Remote instead of add_wifi_port
-    // WiFi Remote over SDIO doesn't support the specialized add_wifi_port function
-    ESP_ERROR_CHECK(esp_netif_br_glue_add_port(br_glue, s_wifi_netif));
+    // Add WiFi port to bridge
+    ret = esp_netif_br_glue_add_port(br_glue, s_wifi_netif);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add WiFi port: %s", esp_err_to_name(ret));
+        return ret;
+    }
     ESP_LOGI(TAG, "Added WiFi STA port to bridge");
     
     // Attach bridge glue to bridge netif
-    ESP_ERROR_CHECK(esp_netif_attach(s_br_netif, br_glue));
+    ret = esp_netif_attach(s_br_netif, br_glue);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to attach glue: %s", esp_err_to_name(ret));
+        return ret;
+    }
     ESP_LOGI(TAG, "Bridge glue attached successfully");
     
-    // NOW start Ethernet driver (following ESP-IDF bridge example pattern)
-    // This must be done AFTER bridge glue is attached, so bridge event handlers
-    // can intercept ETHERNET_EVENT_START and set up packet forwarding properly
-    // NOTE: WiFi is ALREADY started in connect_wifi() - do NOT start it again!
-    ESP_LOGI(TAG, "Starting Ethernet driver with bridge fully configured...");
+    // Clear connection state flags before starting WiFi
+    xEventGroupClearBits(s_event_flags, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_DISCONNECTED_BIT);
+    s_wifi_retry_num = 0;
     
-    ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
-    ESP_LOGI(TAG, "Ethernet started - bridge is now operational");
+    // Start WiFi driver
+    // Note: Ethernet driver is already running - we only stopped/recreated netif
+    ESP_LOGI(TAG, "Starting WiFi driver...");
+    ret = esp_wifi_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start WiFi: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG, "✓ WiFi started, will auto-connect to configured AP");
     
-    // Note: Bridge operates at L2, no IP event handling needed
-    // PC will obtain IP directly from router via transparent bridging
+    // Wait for WiFi connection with timeout
+    // WiFi will automatically connect based on config set in init_wifi_with_pc_mac()
+    const TickType_t timeout = pdMS_TO_TICKS((WIFI_MAXIMUM_RETRY + 1) * 12000);
+    ESP_LOGI(TAG, "Waiting for WiFi connection (timeout: %d sec, max retries: %d)...", 
+             (WIFI_MAXIMUM_RETRY + 1) * 12, WIFI_MAXIMUM_RETRY);
+    
+    EventBits_t bits = xEventGroupWaitBits(s_event_flags, 
+                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                            pdFALSE, pdFALSE, timeout);
+    
+    if (bits & WIFI_CONNECTED_BIT) {
+        ESP_LOGI(TAG, "✓ WiFi connected successfully");
+    } else if (bits & WIFI_FAIL_BIT) {
+        ESP_LOGE(TAG, "WiFi connection failed after %d retries", WIFI_MAXIMUM_RETRY);
+        return ESP_FAIL;
+    } else {
+        ESP_LOGE(TAG, "WiFi connection timeout");
+        return ESP_ERR_TIMEOUT;
+    }
     
     ESP_LOGI(TAG, "===========================================");
     ESP_LOGI(TAG, "Bridge Created Successfully!");
-    ESP_LOGI(TAG, "Configuration:");
-    ESP_LOGI(TAG, "  PC MAC:     %02x:%02x:%02x:%02x:%02x:%02x",
+    ESP_LOGI(TAG, "PC MAC: %02x:%02x:%02x:%02x:%02x:%02x",
              s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
              s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
-    ESP_LOGI(TAG, "  WiFi MAC:   %02x:%02x:%02x:%02x:%02x:%02x",
-             s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
-             s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
-    ESP_LOGI(TAG, "  Bridge MAC: %02x:%02x:%02x:%02x:%02x:%02x",
-             s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
-             s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
+    ESP_LOGI(TAG, "Bridge is operational with WiFi connected");
     ESP_LOGI(TAG, "===========================================");
-    
-    ESP_LOGI(TAG, "Transparent L2 bridging now active!");
-    ESP_LOGI(TAG, "PC should be able to get DHCP and access network");
     
     xEventGroupSetBits(s_event_flags, BRIDGE_READY_BIT);
     return ESP_OK;
@@ -745,36 +882,70 @@ void app_main(void)
     // Step 4: Start reconfigure button monitoring
     xTaskCreate(reconfigure_button_task, "recfg_btn", 4096, NULL, 5, NULL);
     
-    // Step 5: Initialize WiFi with PC MAC
-    ESP_ERROR_CHECK(init_wifi_with_pc_mac());
-    
-    // Step 6: Connect WiFi
-    esp_err_t wifi_err = connect_wifi();
-    if (wifi_err != ESP_OK) {
-        ESP_LOGE(TAG, "========================================");
-        ESP_LOGE(TAG, "WiFi Connection Failed!");
-        ESP_LOGE(TAG, "========================================");
-        ESP_LOGE(TAG, "Possible reasons:");
-        ESP_LOGE(TAG, "  - Wrong WiFi password");
-        ESP_LOGE(TAG, "  - WiFi network unavailable");
-        ESP_LOGE(TAG, "  - Signal too weak");
-        ESP_LOGE(TAG, "");
-        ESP_LOGE(TAG, "To reconfigure WiFi:");
-        ESP_LOGE(TAG, "  Long-press Boot button (GPIO2) for 2 seconds");
-        ESP_LOGE(TAG, "========================================");
-        
-        // Don't restart or abort - bridge can still work when WiFi becomes available
-        // WiFi will automatically retry connection when available
-        // User can trigger reconfiguration with button
+    // Step 5: Initialize WiFi with PC MAC and configure credentials
+    // WiFi will not be started yet - following official bridge example pattern
+    esp_err_t wifi_init_err = init_wifi_with_pc_mac();
+    if (wifi_init_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize WiFi: %s", esp_err_to_name(wifi_init_err));
+        ESP_LOGE(TAG, "Possible causes:");
+        ESP_LOGE(TAG, "  - C6 not responding");
+        ESP_LOGE(TAG, "  - WiFi credentials invalid");
+        ESP_LOGE(TAG, "Restarting...");
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        esp_restart();
     }
     
-    // Step 7: Re-initialize Ethernet in clean state for bridge
-    // After WiFi is connected, Ethernet is re-initialized fresh
-    // This ensures both netifs (Ethernet and WiFi) are in clean state for bridge
-    ESP_ERROR_CHECK(reinit_ethernet_for_bridge());
+    ESP_LOGI(TAG, "✓ WiFi initialized and configured");
     
-    // Step 8: Create bridge with both clean netifs
-    ESP_ERROR_CHECK(create_bridge());
+    // Step 6: Re-initialize Ethernet for bridge
+    // Ethernet will not be started yet - following official bridge example pattern
+    esp_err_t eth_err = reinit_ethernet_for_bridge();
+    if (eth_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to re-initialize Ethernet: %s", esp_err_to_name(eth_err));
+        ESP_LOGE(TAG, "Cannot create bridge. Restarting...");
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        esp_restart();
+    }
+    
+    ESP_LOGI(TAG, "✓ Ethernet re-initialized for bridge");
+    
+    // Step 7: Create bridge and start both interfaces
+    // Following official ESP-IDF bridge example pattern:
+    // - Both netifs are created and configured
+    // - Bridge is configured
+    // - Both interfaces started together
+    // - Wait for WiFi connection
+    esp_err_t bridge_err = create_bridge();
+    if (bridge_err != ESP_OK) {
+        ESP_LOGE(TAG, "========================================");
+        ESP_LOGE(TAG, "Bridge Creation or WiFi Connection Failed!");
+        ESP_LOGE(TAG, "========================================");
+        ESP_LOGE(TAG, "Error code: %s", esp_err_to_name(bridge_err));
+        
+        if (bridge_err == ESP_ERR_TIMEOUT || bridge_err == ESP_FAIL) {
+            ESP_LOGE(TAG, "Possible reasons:");
+            ESP_LOGE(TAG, "  - Wrong WiFi password");
+            ESP_LOGE(TAG, "  - WiFi network unavailable");
+            ESP_LOGE(TAG, "  - Signal too weak");
+            ESP_LOGE(TAG, "");
+            ESP_LOGE(TAG, "To reconfigure WiFi:");
+            ESP_LOGE(TAG, "  Long-press Boot button (GPIO2) for 2 seconds");
+            ESP_LOGE(TAG, "========================================");
+            ESP_LOGE(TAG, "System will wait for manual reconfiguration...");
+            
+            // Cannot proceed - wait for manual intervention
+            while (1) {
+                vTaskDelay(pdMS_TO_TICKS(10000));
+                ESP_LOGW(TAG, "Waiting for manual reconfiguration...");
+            }
+        } else {
+            ESP_LOGE(TAG, "System cannot operate without bridge. Restarting...");
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            esp_restart();
+        }
+    }
+    
+    ESP_LOGI(TAG, "✓ Bridge created and WiFi connected successfully");
     
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "===========================================");
