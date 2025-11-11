@@ -398,10 +398,12 @@ static esp_err_t init_wifi_with_pc_mac(void)
     // Register WiFi event handler
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_REMOTE_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     
-    // Start WiFi
-    ESP_ERROR_CHECK(esp_wifi_start());
+    // NOTE: Do NOT start WiFi here!
+    // Following ESP-IDF bridge example pattern, esp_wifi_start() should be called
+    // AFTER bridge is fully set up, together with esp_eth_start()
     
-    ESP_LOGI(TAG, "WiFi initialized with PC MAC");
+    ESP_LOGI(TAG, "WiFi initialized with PC MAC (not started yet)");
+    ESP_LOGI(TAG, "Note: WiFi will be started AFTER being added to bridge");
     return ESP_OK;
 }
 
@@ -552,12 +554,20 @@ static esp_err_t create_bridge(void)
     ESP_ERROR_CHECK(esp_netif_attach(s_br_netif, br_glue));
     ESP_LOGI(TAG, "Bridge glue attached successfully");
     
-    // NOW start Ethernet driver (following ESP-IDF bridge example pattern)
+    // NOW start BOTH WiFi and Ethernet drivers (following ESP-IDF bridge example pattern)
     // This must be done AFTER bridge glue is attached, so bridge event handlers
-    // can intercept ETHERNET_EVENT_START and set up packet forwarding properly
-    ESP_LOGI(TAG, "Starting Ethernet driver with bridge fully configured...");
+    // can intercept start events and set up packet forwarding properly
+    ESP_LOGI(TAG, "Starting WiFi and Ethernet drivers with bridge fully configured...");
+    
+    // Start WiFi first
+    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_LOGI(TAG, "WiFi started");
+    
+    // Then start Ethernet
     ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
-    ESP_LOGI(TAG, "Ethernet started - bridge is now operational");
+    ESP_LOGI(TAG, "Ethernet started");
+    
+    ESP_LOGI(TAG, "Both interfaces started - bridge is now operational");
     
     // Note: Bridge operates at L2, no IP event handling needed
     // PC will obtain IP directly from router via transparent bridging
