@@ -269,14 +269,15 @@ static esp_err_t init_ethernet(void)
     free(eth_handles);
     
     // Create Ethernet netif glue for initial MAC learning phase
-    // This will be destroyed and recreated fresh for bridge
+    // Note: glue ownership will transfer to netif after esp_netif_attach()
+    // The glue will be automatically freed when netif is destroyed
     void *eth_glue = esp_eth_new_netif_glue(s_eth_handle);
     if (!eth_glue) {
         ESP_LOGE(TAG, "Failed to create Ethernet netif glue");
         return ESP_FAIL;
     }
     
-    // Attach Ethernet driver to netif
+    // Attach Ethernet driver to netif (glue ownership transfers to netif)
     ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, eth_glue));
     
     // Assign static link-local IP to Ethernet
@@ -362,11 +363,13 @@ static esp_err_t wait_for_pc_mac_and_cleanup(void)
     ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
     ESP_LOGI(TAG, "✓ Ethernet driver stopped");
     
-    // Destroy netif (this will also cleanup the glue)
+    // Destroy netif - this automatically cleans up the associated glue
+    // The glue ownership was transferred to netif when we called esp_netif_attach()
+    // So esp_netif_destroy() will handle glue cleanup internally
     esp_netif_destroy(s_eth_netif);
     s_eth_netif = NULL;
-    s_eth_glue = NULL;  // Glue is cleaned up with netif
-    ESP_LOGI(TAG, "✓ Ethernet netif and glue destroyed");
+    s_eth_glue = NULL;  // Clear pointer (actual glue was freed by esp_netif_destroy)
+    ESP_LOGI(TAG, "✓ Ethernet netif destroyed (glue automatically cleaned up)");
     
     ESP_LOGI(TAG, "Ethernet cleanup complete - ready for clean bridge init");
     
@@ -530,6 +533,7 @@ static esp_err_t reinit_ethernet_for_bridge(void)
     }
     
     // Create fresh glue and attach to netif
+    // Note: After esp_netif_attach(), glue ownership transfers to netif
     s_eth_glue = esp_eth_new_netif_glue(s_eth_handle);
     if (!s_eth_glue) {
         ESP_LOGE(TAG, "Failed to create Ethernet glue");
@@ -538,6 +542,7 @@ static esp_err_t reinit_ethernet_for_bridge(void)
         return ESP_FAIL;
     }
     
+    // Attach glue to netif (glue ownership transfers to netif)
     esp_err_t ret = esp_netif_attach(s_eth_netif, s_eth_glue);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to attach: %s", esp_err_to_name(ret));
