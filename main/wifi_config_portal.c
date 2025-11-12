@@ -30,6 +30,7 @@
 #include "esp_eth.h"
 #include "esp_netif.h"
 #include "ethernet_init.h"
+#include "lwip/etharp.h"  // For ARP table access
 
 static const char *TAG = "wifi_config_portal";
 
@@ -157,28 +158,37 @@ static const char config_page_html[] =
 "</script></body></html>";
 
 /**
- * Ethernet packet callback to learn PC's MAC address
- * Captures the source MAC from the first incoming packet
+ * Get PC MAC from ARP table after DHCP assigns IP
+ * Simpler approach: When PC gets IP via DHCP, its MAC appears in ARP table
  */
-static esp_err_t eth_packet_callback(esp_eth_handle_t hdl, uint8_t *buffer, uint32_t length, void *priv)
+static esp_err_t get_pc_mac_from_arp(void)
 {
-    // Only learn MAC once
-    if (s_pc_mac_learned) {
-        // Pass packet to network stack
-        return esp_netif_receive(s_eth_netif, buffer, length, NULL);
+    // Access lwIP ARP table to find PC's MAC
+    // The PC's MAC will be in ARP table after DHCP assigns IP and ARP happens
+    
+    for (int i = 0; i < ARP_TABLE_SIZE; i++) {
+        ip4_addr_t *ipaddr;
+        struct netif *ret_netif;
+        struct eth_addr *eth_ret;
+        
+        if (etharp_get_entry(i, &ipaddr, &ret_netif, &eth_ret) != ERR_OK) {
+            continue;
+        }
+        
+        // Check if this is a valid entry (not the gateway itself)
+        if (!ip4_addr_isany(ipaddr) && !ip4_addr_isbroadcast(ipaddr, ret_netif)) {
+            // Found valid ARP entry for PC
+            memcpy(s_pc_mac, eth_ret->addr, 6);
+            s_pc_mac_learned = true;
+            ESP_LOGI(TAG, "✓ PC MAC learned from ARP table: %02x:%02x:%02x:%02x:%02x:%02x (IP: " IPSTR ")",
+                     s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
+                     s_pc_mac[3], s_pc_mac[4], s_pc_mac[5],
+                     IP2STR(ipaddr));
+            return ESP_OK;
+        }
     }
     
-    // Extract source MAC from Ethernet frame (bytes 6-11)
-    if (length >= 14) {  // Minimum Ethernet frame size
-        memcpy(s_pc_mac, buffer + 6, 6);
-        s_pc_mac_learned = true;
-        ESP_LOGI(TAG, "PC MAC learned from packet: %02x:%02x:%02x:%02x:%02x:%02x",
-                 s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
-                 s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
-    }
-    
-    // Pass packet to network stack
-    return esp_netif_receive(s_eth_netif, buffer, length, NULL);
+    return ESP_ERR_NOT_FOUND;
 }
 
 /**
@@ -466,10 +476,10 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     s_success_bit = success_bit;
     
     // ========================================================================
-    // Initialize Ethernet to learn PC's MAC address (from first packet)
+    // Initialize Ethernet with DHCP server to learn PC's MAC address
     // ========================================================================
-    ESP_LOGI(TAG, "Initializing Ethernet to learn PC MAC address...");
-    ESP_LOGI(TAG, "NOTE: Learning PC's MAC from first packet, NOT P4's Ethernet PHY MAC");
+    ESP_LOGI(TAG, "Initializing Ethernet with DHCP server...");
+    ESP_LOGI(TAG, "PC will get IP via DHCP, then we query ARP table for MAC");
     
     // Create Ethernet netif (same as official bridge example)
     esp_netif_inherent_config_t eth_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
@@ -493,25 +503,40 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
             // Attach Ethernet driver to netif
             ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle)));
             
-            // Install packet capture callback to learn PC MAC
-            ESP_LOGI(TAG, "Installing packet callback to learn PC MAC address...");
-            ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, eth_packet_callback, NULL));
-            
-            // Start Ethernet
+            // Start Ethernet with DHCP server
             ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
             
-            ESP_LOGI(TAG, "Ethernet started - waiting for PC to send first packet...");
-            ESP_LOGI(TAG, "Please ensure your PC is connected via Ethernet cable");
+            // Configure Ethernet interface with static IP for DHCP server
+            ESP_ERROR_CHECK(esp_netif_dhcpc_stop(s_eth_netif));
             
-            // Wait for PC MAC to be learned (timeout 30 seconds)
+            esp_netif_ip_info_t ip_info = {
+                .ip = {.addr = ESP_IP4TOADDR(192, 168, 5, 1)},
+                .gw = {.addr = ESP_IP4TOADDR(192, 168, 5, 1)},
+                .netmask = {.addr = ESP_IP4TOADDR(255, 255, 255, 0)},
+            };
+            ESP_ERROR_CHECK(esp_netif_set_ip_info(s_eth_netif, &ip_info));
+            
+            // Start DHCP server on Ethernet
+            ESP_ERROR_CHECK(esp_netif_dhcps_start(s_eth_netif));
+            
+            ESP_LOGI(TAG, "Ethernet started with DHCP server at 192.168.5.1");
+            ESP_LOGI(TAG, "Please connect your PC via Ethernet cable");
+            ESP_LOGI(TAG, "PC will get IP 192.168.5.x via DHCP");
+            
+            // Wait for PC to get IP and appear in ARP table (timeout 30 seconds)
             int wait_count = 0;
             while (!s_pc_mac_learned && wait_count < 300) {  // 30 seconds
                 vTaskDelay(pdMS_TO_TICKS(100));
                 wait_count++;
                 
+                // Try to get PC MAC from ARP table
+                if (get_pc_mac_from_arp() == ESP_OK) {
+                    break;
+                }
+                
                 // Log progress every 5 seconds
                 if (wait_count % 50 == 0) {
-                    ESP_LOGI(TAG, "Still waiting for PC packet... (%d seconds)", wait_count / 10);
+                    ESP_LOGI(TAG, "Waiting for PC to get IP via DHCP... (%d seconds)", wait_count / 10);
                 }
             }
             
