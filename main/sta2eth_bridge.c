@@ -85,8 +85,7 @@ static void link_down_timer_callback(void *arg)
 
 /**
  * Ethernet packet receive callback for MAC learning (ONE-TIME ONLY)
- * After learning the MAC, this callback just frees packets until the
- * bridge glue takes over packet handling.
+ * This callback is removed immediately after learning the first packet
  */
 static esp_err_t eth_packet_receive_cb(esp_eth_handle_t hdl, uint8_t *buffer, uint32_t length, void *priv)
 {
@@ -102,12 +101,11 @@ static esp_err_t eth_packet_receive_cb(esp_eth_handle_t hdl, uint8_t *buffer, ui
                  s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
         ESP_LOGI(TAG, "===========================================");
         
-        // Signal that MAC is learned so we can proceed with WiFi initialization
+        // CRITICAL: Signal that MAC is learned so callback can be removed
         xEventGroupSetBits(s_event_flags, MAC_LEARNED_BIT);
     }
     
-    // Free the buffer - after MAC is learned, we just discard packets
-    // until the bridge glue takes over packet handling
+    // Free the buffer - we're just learning MAC, not forwarding yet
     free(buffer);
     return ESP_OK;
 }
@@ -294,10 +292,9 @@ static esp_err_t init_ethernet(void)
     ESP_ERROR_CHECK(esp_eth_ioctl(s_eth_handle, ETH_CMD_S_PROMISCUOUS, &promiscuous));
     ESP_LOGI(TAG, "Ethernet promiscuous mode enabled for MAC learning");
     
-    // Register packet receive callback for MAC learning
-    // This callback will be replaced by the bridge glue when we create the bridge
+    // Register packet receive callback for MAC learning (will be removed after first packet)
     ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, eth_packet_receive_cb, NULL));
-    ESP_LOGI(TAG, "MAC learning callback registered");
+    ESP_LOGI(TAG, "MAC learning callback registered (one-time use)");
     
     // Register event handlers
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
@@ -310,13 +307,9 @@ static esp_err_t init_ethernet(void)
 }
 
 /**
- * Step 2: Wait for PC MAC learning
- * 
- * After learning the PC MAC from the first packet, we need to prepare
- * the ethernet netif for bridge attachment. The custom packet callback
- * needs to be removed so the bridge can properly handle packets.
+ * Step 2: Wait for PC MAC learning and cleanup Ethernet
  */
-static esp_err_t wait_for_pc_mac(void)
+static esp_err_t wait_for_pc_mac_and_cleanup(void)
 {
     ESP_LOGI(TAG, "Step 2: Waiting for Ethernet link and PC packet...");
     
@@ -332,13 +325,31 @@ static esp_err_t wait_for_pc_mac(void)
     
     ESP_LOGI(TAG, "PC MAC learned successfully!");
     
-    // Detach the netif from the current glue
-    // This is necessary because we used esp_eth_update_input_path() which
-    // modified the ethernet driver's packet handler directly.
-    // When we add to bridge, the bridge needs to set up its own packet handling.
-    ESP_LOGI(TAG, "Detaching ethernet netif to prepare for bridge attachment...");
-    esp_netif_detach(s_eth_netif);
-    ESP_LOGI(TAG, "Ethernet netif detached - ready for bridge");
+    // CRITICAL: Completely deinitialize Ethernet to ensure clean state for bridge
+    // This ensures both netifs are absolutely clean when bridge is created
+    ESP_LOGI(TAG, "Deinitializing Ethernet to ensure clean state for bridge...");
+    
+    // Stop link down timer if it's running (could have started if link went down briefly)
+    if (s_link_down_timer) {
+        esp_timer_stop(s_link_down_timer);
+    }
+    
+    // CRITICAL: Unregister event handlers BEFORE stopping Ethernet
+    // This prevents the LINK_DOWN event from esp_eth_stop() from starting the timer
+    ESP_ERROR_CHECK(esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler));
+    ESP_LOGI(TAG, "Ethernet event handlers unregistered");
+    
+    // Stop Ethernet (will trigger LINK_DOWN event, but handler is already unregistered)
+    ESP_ERROR_CHECK(esp_eth_stop(s_eth_handle));
+    ESP_LOGI(TAG, "Ethernet stopped");
+    
+    // Destroy Ethernet netif (will be recreated clean for bridge)
+    esp_netif_destroy(s_eth_netif);
+    s_eth_netif = NULL;
+    ESP_LOGI(TAG, "Ethernet netif destroyed");
+    
+    // Driver and timer remain valid for re-initialization
+    ESP_LOGI(TAG, "Ethernet deinitialization complete - ready for clean bridge init");
     
     return ESP_OK;
 }
@@ -459,13 +470,55 @@ static esp_err_t connect_wifi(void)
     }
 }
 
-
+/**
+ * Reinitialize Ethernet cleanly for bridge
+ * Called after WiFi is connected to ensure Ethernet netif is in clean state
+ */
+static esp_err_t reinit_ethernet_for_bridge(void)
+{
+    ESP_LOGI(TAG, "Re-initializing Ethernet in clean state for bridge...");
+    
+    // Create clean Ethernet netif for bridge
+    esp_netif_inherent_config_t eth_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
+    eth_cfg.flags = 0;  // No flags for bridged port
+    esp_netif_config_t netif_cfg = {
+        .base = &eth_cfg,
+        .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH
+    };
+    s_eth_netif = esp_netif_new(&netif_cfg);
+    
+    // Attach Ethernet driver to netif (driver handle is still valid from initial setup)
+    ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle)));
+    
+    // Start the Ethernet driver FIRST - this initializes the netif properly
+    // The driver must be started before adding to bridge so netif is fully initialized
+    ESP_LOGI(TAG, "Starting Ethernet driver to initialize netif...");
+    ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
+    ESP_LOGI(TAG, "Ethernet driver started, netif fully initialized");
+    
+    // Assign static link-local IP to Ethernet
+    esp_netif_dhcpc_stop(s_eth_netif);
+    esp_netif_ip_info_t eth_ip_info = {
+        .ip = { .addr = ESP_IP4TOADDR(169, 254, 0, 3) },
+        .gw = { .addr = ESP_IP4TOADDR(169, 254, 0, 1) },
+        .netmask = { .addr = ESP_IP4TOADDR(255, 255, 0, 0) },
+    };
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_eth_netif, &eth_ip_info));
+    
+    // Re-enable promiscuous mode (needed for bridge)
+    bool promiscuous = true;
+    ESP_ERROR_CHECK(esp_eth_ioctl(s_eth_handle, ETH_CMD_S_PROMISCUOUS, &promiscuous));
+    
+    // Re-register event handlers
+    ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
+    
+    ESP_LOGI(TAG, "Ethernet re-initialized and started successfully");
+    ESP_LOGI(TAG, "Ready to be added to bridge (netif is now fully operational)");
+    return ESP_OK;
+}
 
 /**
  * Step 5: Create bridge
- * 
- * Ethernet and WiFi are already initialized and running.
- * We simply create the bridge and add both interfaces to it.
  */
 static esp_err_t create_bridge(void)
 {
@@ -493,20 +546,28 @@ static esp_err_t create_bridge(void)
     // Create bridge glue and add ports
     esp_netif_br_glue_handle_t br_glue = esp_netif_br_glue_new();
     
-    // Add Ethernet port (already running)
+    // Add Ethernet port
     ESP_ERROR_CHECK(esp_netif_br_glue_add_port(br_glue, s_eth_netif));
     ESP_LOGI(TAG, "Added Ethernet port to bridge");
     
-    // Add WiFi STA port (already started and connected)
+    // Add WiFi STA port
     // Note: Use generic add_port for WiFi Remote instead of add_wifi_port
     // WiFi Remote over SDIO doesn't support the specialized add_wifi_port function
     ESP_ERROR_CHECK(esp_netif_br_glue_add_port(br_glue, s_wifi_netif));
     ESP_LOGI(TAG, "Added WiFi STA port to bridge");
     
     // Attach bridge glue to bridge netif
-    // This automatically takes over packet forwarding for both interfaces
     ESP_ERROR_CHECK(esp_netif_attach(s_br_netif, br_glue));
-    ESP_LOGI(TAG, "Bridge glue attached - packet forwarding now active");
+    ESP_LOGI(TAG, "Bridge glue attached successfully");
+    
+    // NOW start Ethernet driver (following ESP-IDF bridge example pattern)
+    // This must be done AFTER bridge glue is attached, so bridge event handlers
+    // can intercept ETHERNET_EVENT_START and set up packet forwarding properly
+    // NOTE: WiFi is ALREADY started in connect_wifi() - do NOT start it again!
+    ESP_LOGI(TAG, "Starting Ethernet driver with bridge fully configured...");
+    
+    ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
+    ESP_LOGI(TAG, "Ethernet started - bridge is now operational");
     
     // Note: Bridge operates at L2, no IP event handling needed
     // PC will obtain IP directly from router via transparent bridging
@@ -645,13 +706,13 @@ void app_main(void)
     // Normal operation: C6 is present and firmware is compatible
     // ========================================================================
     
-    // Step 1: Initialize Ethernet and enable MAC learning
+    // Step 1: Initialize Ethernet for MAC learning ONLY
     ESP_ERROR_CHECK(init_ethernet());
     
-    // Step 2: Wait for PC MAC learning
-    // The custom callback will capture the first packet to learn PC MAC
-    // After that, the bridge will take over packet handling automatically
-    ESP_ERROR_CHECK(wait_for_pc_mac());
+    // Step 2: Wait for PC MAC learning and cleanup Ethernet
+    // After MAC is learned, Ethernet is completely deinitialized
+    // to ensure clean state for bridge initialization later
+    ESP_ERROR_CHECK(wait_for_pc_mac_and_cleanup());
     
     // Step 3: Check WiFi provisioning
     bool wifi_configured = is_wifi_provisioned();
@@ -707,9 +768,12 @@ void app_main(void)
         // User can trigger reconfiguration with button
     }
     
-    // Step 7: Create bridge with both running interfaces
-    // Both Ethernet and WiFi are already initialized and running,
-    // simply create the bridge and add them as ports
+    // Step 7: Re-initialize Ethernet in clean state for bridge
+    // After WiFi is connected, Ethernet is re-initialized fresh
+    // This ensures both netifs (Ethernet and WiFi) are in clean state for bridge
+    ESP_ERROR_CHECK(reinit_ethernet_for_bridge());
+    
+    // Step 8: Create bridge with both clean netifs
     ESP_ERROR_CHECK(create_bridge());
     
     ESP_LOGI(TAG, "");
