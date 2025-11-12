@@ -85,7 +85,8 @@ static void link_down_timer_callback(void *arg)
 
 /**
  * Ethernet packet receive callback for MAC learning (ONE-TIME ONLY)
- * This callback is removed immediately after learning the first packet
+ * After learning the MAC, this callback just frees packets until the
+ * bridge glue takes over packet handling.
  */
 static esp_err_t eth_packet_receive_cb(esp_eth_handle_t hdl, uint8_t *buffer, uint32_t length, void *priv)
 {
@@ -101,11 +102,12 @@ static esp_err_t eth_packet_receive_cb(esp_eth_handle_t hdl, uint8_t *buffer, ui
                  s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
         ESP_LOGI(TAG, "===========================================");
         
-        // CRITICAL: Signal that MAC is learned so callback can be removed
+        // Signal that MAC is learned so we can proceed with WiFi initialization
         xEventGroupSetBits(s_event_flags, MAC_LEARNED_BIT);
     }
     
-    // Free the buffer - we're just learning MAC, not forwarding yet
+    // Free the buffer - after MAC is learned, we just discard packets
+    // until the bridge glue takes over packet handling
     free(buffer);
     return ESP_OK;
 }
@@ -292,9 +294,10 @@ static esp_err_t init_ethernet(void)
     ESP_ERROR_CHECK(esp_eth_ioctl(s_eth_handle, ETH_CMD_S_PROMISCUOUS, &promiscuous));
     ESP_LOGI(TAG, "Ethernet promiscuous mode enabled for MAC learning");
     
-    // Register packet receive callback for MAC learning (will be removed after first packet)
+    // Register packet receive callback for MAC learning
+    // This callback will be replaced by the bridge glue when we create the bridge
     ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, eth_packet_receive_cb, NULL));
-    ESP_LOGI(TAG, "MAC learning callback registered (one-time use)");
+    ESP_LOGI(TAG, "MAC learning callback registered");
     
     // Register event handlers
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
