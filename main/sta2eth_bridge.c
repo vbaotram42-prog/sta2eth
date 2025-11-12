@@ -385,6 +385,11 @@ void app_main(void)
     
     // Create bridge netif configuration
     esp_netif_inherent_config_t br_cfg = ESP_NETIF_INHERENT_DEFAULT_BR();
+    
+    // CRITICAL: Remove DHCP client flag - bridge should NOT get IP
+    // Only PC should get IP from router
+    br_cfg.flags &= ~ESP_NETIF_DHCP_CLIENT;
+    
     esp_netif_config_t br_netif_cfg = {
         .base = &br_cfg,
         .stack = ESP_NETIF_NETSTACK_DEFAULT_BR,
@@ -398,9 +403,12 @@ void app_main(void)
     };
     br_cfg.bridge_info = &bridgeif_config;
     
-    // Set bridge MAC to the common MAC
+    // Set bridge MAC to the common MAC (PC's MAC)
     memcpy(br_cfg.mac, s_common_mac, 6);
     s_br_netif = esp_netif_new(&br_netif_cfg);
+    
+    // Explicitly stop DHCP client on bridge (safety measure)
+    esp_netif_dhcpc_stop(s_br_netif);
     
     // Create bridge glue and add ports
     esp_netif_br_glue_handle_t br_glue = esp_netif_br_glue_new();
@@ -410,7 +418,7 @@ void app_main(void)
     // Attach bridge glue to bridge netif
     ESP_ERROR_CHECK(esp_netif_attach(s_br_netif, br_glue));
     
-    ESP_LOGI(TAG, "✓ Bridge created");
+    ESP_LOGI(TAG, "✓ Bridge created (DHCP disabled, L2 only)");
     
     // ========================================================================
     // Step 4: Register event handlers
