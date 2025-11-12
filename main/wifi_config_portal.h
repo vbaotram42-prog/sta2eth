@@ -57,6 +57,29 @@ esp_err_t load_wifi_credentials(char *ssid, char *password);
  */
 esp_err_t clear_wifi_credentials(void);
 
+/**
+ * @brief Save Ethernet MAC address to P4's NVS
+ * 
+ * @param eth_mac Ethernet MAC address (6 bytes)
+ * @return ESP_OK on success
+ */
+esp_err_t save_eth_mac(const uint8_t *eth_mac);
+
+/**
+ * @brief Load Ethernet MAC address from P4's NVS
+ * 
+ * @param eth_mac Buffer to store Ethernet MAC (must be at least 6 bytes)
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND if not saved
+ */
+esp_err_t load_eth_mac(uint8_t *eth_mac);
+
+/**
+ * @brief Check if Ethernet MAC is saved
+ * 
+ * @return true if MAC is saved
+ */
+bool is_eth_mac_saved(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -27,6 +27,9 @@
 #include "wifi_config_portal.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_eth.h"
+#include "esp_netif.h"
+#include "ethernet_init.h"
 
 static const char *TAG = "wifi_config_portal";
 
@@ -34,6 +37,8 @@ static httpd_handle_t s_web_server = NULL;
 static EventGroupHandle_t *s_event_flags = NULL;
 static int s_success_bit;
 static esp_netif_t *s_ap_netif = NULL;
+static esp_netif_t *s_eth_netif = NULL;
+static esp_eth_handle_t s_eth_handle = NULL;
 
 // SoftAP configuration
 #define SOFTAP_SSID       "ESP32-P4-Config"
@@ -73,12 +78,24 @@ static const char config_page_html[] =
 ".status.info{background:#e3f2fd;color:#1976d2}"
 ".status.success{background:#e8f5e9;color:#388e3c}"
 ".status.error{background:#ffebee;color:#c62828}"
+".status.warning{background:#fff3e0;color:#f57c00}"
+".eth-prompt{margin:0 0 20px 0;padding:15px;border-radius:10px;background:#fff3e0;color:#f57c00;border-left:4px solid #f57c00}"
+".eth-prompt h3{font-size:16px;margin-bottom:8px;display:flex;align-items:center}"
+".eth-prompt h3 span{margin-right:8px}"
+".eth-prompt p{font-size:14px;line-height:1.5;margin:5px 0}"
+".eth-prompt .eth-mac{font-family:monospace;font-weight:bold;background:rgba(0,0,0,0.1);padding:4px 8px;border-radius:4px;display:inline-block;margin-top:5px}"
 ".loading{display:inline-block;width:20px;height:20px;border:3px solid rgba(255,255,255,0.3);border-radius:50%;border-top-color:white;animation:spin 1s linear infinite}"
 "@keyframes spin{to{transform:rotate(360deg)}}"
 "</style></head><body>"
 "<div class='container'>"
 "<div class='header'><h1>🌐 WiFi Configuration</h1><p>ESP32-P4 + C6 Bridge</p></div>"
 "<div class='content'>"
+"<div class='eth-prompt' id='ethPrompt'>"
+"<h3><span>🔌</span>Important: Connect Ethernet Cable</h3>"
+"<p>Please connect your PC/device to the Ethernet port of this device.</p>"
+"<p>The system will learn the MAC address from your Ethernet connection.</p>"
+"<p id='ethMacStatus'>Checking Ethernet connection...</p>"
+"</div>"
 "<button class='btn' onclick='scanNetworks()' id='scanBtn'>📡 Scan Networks</button>"
 "<div class='network-list' id='networkList'></div>"
 "<div class='form-group'><label>WiFi Name (SSID)</label>"
@@ -121,7 +138,18 @@ static const char config_page_html[] =
 "else{showStatus('✗ Connection failed: '+data.message,'error');"
 "btn.disabled=false;btn.innerHTML='✓ Connect';}}).catch(e=>{"
 "showStatus('✗ Error: '+e,'error');btn.disabled=false;btn.innerHTML='✓ Connect';});}"
-"window.onload=scanNetworks;"
+"function checkEthMac(){fetch('/eth_mac_status').then(r=>r.json()).then(data=>{"
+"const status=document.getElementById('ethMacStatus');"
+"if(data.success){"
+"status.innerHTML='✓ Ethernet connected! MAC: <span class=\"eth-mac\">'+data.mac+'</span>';"
+"document.getElementById('ethPrompt').style.background='#e8f5e9';"
+"document.getElementById('ethPrompt').style.color='#388e3c';"
+"document.getElementById('ethPrompt').style.borderColor='#388e3c';"
+"}else{"
+"status.innerHTML='⚠ '+data.message;"
+"setTimeout(checkEthMac,2000);"
+"}}).catch(()=>setTimeout(checkEthMac,2000));}"
+"window.onload=function(){scanNetworks();checkEthMac();};"
 "</script></body></html>";
 
 /**
@@ -320,9 +348,34 @@ static esp_err_t connect_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/**
+ * Ethernet MAC status handler
+ * Returns the status of Ethernet MAC learning
+ */
+static esp_err_t eth_mac_status_handler(httpd_req_t *req)
+{
+    uint8_t eth_mac[6] = {0};
+    bool mac_saved = (load_eth_mac(eth_mac) == ESP_OK);
+    
+    char json[256];
+    if (mac_saved) {
+        snprintf(json, sizeof(json),
+                 "{\"success\":true,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"message\":\"Ethernet MAC detected\"}",
+                 eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]);
+    } else {
+        snprintf(json, sizeof(json),
+                 "{\"success\":false,\"message\":\"Please connect Ethernet cable and wait...\"}");
+    }
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    return ESP_OK;
+}
+
 static const httpd_uri_t uri_root = {.uri = "/", .method = HTTP_GET, .handler = root_handler};
 static const httpd_uri_t uri_scan = {.uri = "/scan", .method = HTTP_GET, .handler = scan_handler};
 static const httpd_uri_t uri_connect = {.uri = "/connect", .method = HTTP_GET, .handler = connect_handler};
+static const httpd_uri_t uri_eth_mac = {.uri = "/eth_mac_status", .method = HTTP_GET, .handler = eth_mac_status_handler};
 
 // Captive portal detection URLs
 static const httpd_uri_t uri_generate_204 = {.uri = "/generate_204", .method = HTTP_GET, .handler = captive_portal_redirect_handler};
@@ -345,6 +398,7 @@ static void start_webserver(void)
         httpd_register_uri_handler(s_web_server, &uri_root);
         httpd_register_uri_handler(s_web_server, &uri_scan);
         httpd_register_uri_handler(s_web_server, &uri_connect);
+        httpd_register_uri_handler(s_web_server, &uri_eth_mac);
         
         // Register captive portal detection URLs for auto-popup
         httpd_register_uri_handler(s_web_server, &uri_generate_204);  // Android
@@ -381,6 +435,54 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     
     s_event_flags = flags;
     s_success_bit = success_bit;
+    
+    // ========================================================================
+    // Initialize Ethernet to get MAC address
+    // ========================================================================
+    ESP_LOGI(TAG, "Initializing Ethernet to obtain MAC address...");
+    
+    // Create Ethernet netif with DHCP client
+    s_eth_netif = esp_netif_create_default_eth();
+    if (!s_eth_netif) {
+        ESP_LOGE(TAG, "Failed to create Ethernet netif");
+    } else {
+        // Initialize Ethernet driver
+        uint8_t eth_port_cnt = 0;
+        esp_eth_handle_t *eth_handles;
+        esp_err_t ret = ethernet_init_all(&eth_handles, &eth_port_cnt);
+        
+        if (ret == ESP_OK && eth_port_cnt > 0) {
+            s_eth_handle = eth_handles[0];
+            free(eth_handles);
+            
+            // Attach Ethernet driver to netif
+            ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle)));
+            
+            // Start Ethernet
+            ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
+            
+            // Wait briefly for Ethernet link to come up
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            
+            // Get Ethernet MAC address
+            uint8_t eth_mac[6];
+            ret = esp_eth_ioctl(s_eth_handle, ETH_CMD_G_MAC_ADDR, eth_mac);
+            if (ret == ESP_OK) {
+                // Save MAC to NVS
+                save_eth_mac(eth_mac);
+                ESP_LOGI(TAG, "Ethernet MAC saved: %02x:%02x:%02x:%02x:%02x:%02x",
+                         eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]);
+            } else {
+                ESP_LOGW(TAG, "Failed to get Ethernet MAC: %s", esp_err_to_name(ret));
+            }
+        } else {
+            ESP_LOGW(TAG, "No Ethernet interface found or initialization failed");
+        }
+    }
+    
+    // ========================================================================
+    // Initialize WiFi for configuration portal
+    // ========================================================================
     
     // Create AP netif
     s_ap_netif = esp_netif_create_default_wifi_ap();
@@ -436,9 +538,10 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     start_dns_server(&dns_config);
     
     ESP_LOGI(TAG, "Configuration portal ready:");
-    ESP_LOGI(TAG, "  1. Connect phone to WiFi: %s (no password)", SOFTAP_SSID);
-    ESP_LOGI(TAG, "  2. Browser will auto-open or go to: http://192.168.4.1");
-    ESP_LOGI(TAG, "  3. Select your WiFi network and enter password");
+    ESP_LOGI(TAG, "  1. Connect PC to Ethernet port (to learn MAC address)");
+    ESP_LOGI(TAG, "  2. Connect phone to WiFi: %s (no password)", SOFTAP_SSID);
+    ESP_LOGI(TAG, "  3. Browser will auto-open or go to: http://192.168.4.1");
+    ESP_LOGI(TAG, "  4. Wait for Ethernet MAC detection, then configure WiFi");
     
     return ESP_OK;
 }
@@ -563,4 +666,74 @@ bool is_wifi_provisioned(void)
     
     ESP_LOGI(TAG, "No WiFi credentials in P4's NVS");
     return false;
+}
+
+/**
+ * Save Ethernet MAC address to P4's NVS
+ */
+esp_err_t save_eth_mac(const uint8_t *eth_mac)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t ret = nvs_open("sta2eth", NVS_READWRITE, &nvs_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS for ETH MAC save: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // Save MAC as blob (6 bytes)
+    ret = nvs_set_blob(nvs_handle, "eth_mac", eth_mac, 6);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save ETH MAC: %s", esp_err_to_name(ret));
+        nvs_close(nvs_handle);
+        return ret;
+    }
+    
+    ret = nvs_commit(nvs_handle);
+    nvs_close(nvs_handle);
+    
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Ethernet MAC saved to P4's NVS: %02x:%02x:%02x:%02x:%02x:%02x",
+                 eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]);
+    }
+    
+    return ret;
+}
+
+/**
+ * Load Ethernet MAC address from P4's NVS
+ */
+esp_err_t load_eth_mac(uint8_t *eth_mac)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t ret = nvs_open("sta2eth", NVS_READONLY, &nvs_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS for ETH MAC load: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // Load MAC as blob
+    size_t mac_len = 6;
+    ret = nvs_get_blob(nvs_handle, "eth_mac", eth_mac, &mac_len);
+    nvs_close(nvs_handle);
+    
+    if (ret == ESP_OK && mac_len == 6) {
+        ESP_LOGI(TAG, "Ethernet MAC loaded from P4's NVS: %02x:%02x:%02x:%02x:%02x:%02x",
+                 eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]);
+        return ESP_OK;
+    }
+    
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to load ETH MAC: %s", esp_err_to_name(ret));
+    }
+    
+    return ret;
+}
+
+/**
+ * Check if Ethernet MAC is saved
+ */
+bool is_eth_mac_saved(void)
+{
+    uint8_t mac[6];
+    return (load_eth_mac(mac) == ESP_OK);
 }
