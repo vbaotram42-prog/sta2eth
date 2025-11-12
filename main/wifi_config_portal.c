@@ -438,10 +438,11 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     
     // ========================================================================
     // Initialize Ethernet to get MAC address
+    // Following official ESP-IDF bridge example pattern
     // ========================================================================
     ESP_LOGI(TAG, "Initializing Ethernet to obtain MAC address...");
     
-    // Create Ethernet netif manually (no default function exists)
+    // Create Ethernet netif (same as official bridge example)
     esp_netif_inherent_config_t eth_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
     esp_netif_config_t netif_cfg = {
         .base = &eth_cfg,
