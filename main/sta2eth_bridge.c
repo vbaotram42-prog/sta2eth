@@ -11,9 +11,12 @@
  * https://github.com/espressif/esp-idf/tree/master/examples/network/bridge
  * 
  * Architecture:
- * 1. During first boot: Configuration portal learns Ethernet MAC and WiFi credentials
- * 2. Normal operation: Use saved MAC for both Ethernet and WiFi, create L2 bridge
- * 3. Transparent bridging between Ethernet and WiFi with same MAC address
+ * 1. During first boot: Configuration portal obtains P4's Ethernet PHY MAC and WiFi credentials
+ * 2. Normal operation: Use P4's ETH MAC for both Ethernet and WiFi interfaces, create L2 bridge
+ * 3. Transparent L2 bridging between Ethernet and WiFi
+ * 
+ * Note: The MAC used is the ESP32-P4's Ethernet PHY MAC (not the PC's MAC)
+ *       This allows both the bridge and PC to coexist on the network with different IPs
  */
 
 #include <string.h>
@@ -278,6 +281,18 @@ void app_main(void)
     
     // ========================================================================
     // Load saved Ethernet MAC address
+    // 
+    // This is the P4's Ethernet PHY hardware MAC (not PC's MAC!)
+    // - Used for: Ethernet netif MAC
+    // - Used for: WiFi netif MAC  
+    // - Used for: Bridge netif MAC
+    // 
+    // Network topology:
+    //   [PC with PC_MAC] <--ETH--> [Bridge with P4_ETH_MAC] <--WiFi--> [Router]
+    // 
+    // Both PC and Bridge will get separate IPs from router:
+    //   - PC gets IP using PC_MAC (e.g., 192.168.1.101)
+    //   - Bridge gets IP using P4_ETH_MAC (e.g., 192.168.1.100)
     // ========================================================================
     ret = load_eth_mac(s_common_mac);
     if (ret != ESP_OK) {
