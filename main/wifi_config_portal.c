@@ -393,17 +393,31 @@ static esp_err_t connect_handler(httpd_req_t *req)
  */
 static esp_err_t eth_mac_status_handler(httpd_req_t *req)
 {
+    // First try to load saved MAC
     uint8_t eth_mac[6] = {0};
     bool mac_saved = (load_eth_mac(eth_mac) == ESP_OK);
+    
+    // If not saved yet, try to get from ARP table (PC may have connected)
+    if (!mac_saved && !s_pc_mac_learned) {
+        get_pc_mac_from_arp();  // Try to learn now
+    }
+    
+    // Use learned MAC if available
+    if (s_pc_mac_learned) {
+        memcpy(eth_mac, s_pc_mac, 6);
+        mac_saved = true;
+        // Save to NVS for persistence
+        save_eth_mac(s_pc_mac);
+    }
     
     char json[256];
     if (mac_saved) {
         snprintf(json, sizeof(json),
-                 "{\"success\":true,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"message\":\"Ethernet MAC detected\"}",
+                 "{\"success\":true,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"message\":\"PC MAC detected from network\"}",
                  eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]);
     } else {
         snprintf(json, sizeof(json),
-                 "{\"success\":false,\"message\":\"Please connect Ethernet cable and wait...\"}");
+                 "{\"success\":false,\"message\":\"Waiting for PC to connect via Ethernet...\"}");
     }
     
     httpd_resp_set_type(req, "application/json");
@@ -476,21 +490,25 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     s_success_bit = success_bit;
     
     // ========================================================================
-    // Initialize Ethernet with DHCP server to learn PC's MAC address
+    // Initialize WiFi SoftAP + Ethernet Bridge for configuration portal
+    // Works like a small WiFi router: WiFi and Ethernet on same network (192.168.4.x)
     // ========================================================================
-    ESP_LOGI(TAG, "Initializing Ethernet with DHCP server...");
-    ESP_LOGI(TAG, "PC will get IP via DHCP, then we query ARP table for MAC");
+    ESP_LOGI(TAG, "Creating WiFi AP + Ethernet bridge (like WiFi router)");
+    ESP_LOGI(TAG, "Both phone (WiFi) and PC (Ethernet) will get IP from 192.168.4.1");
     
-    // Create Ethernet netif (same as official bridge example)
+    // Create AP netif (192.168.4.1 with DHCP server)
+    s_ap_netif = esp_netif_create_default_wifi_ap();
+    
+    // Initialize Ethernet
+    ESP_LOGI(TAG, "Initializing Ethernet interface...");
     esp_netif_inherent_config_t eth_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
     esp_netif_config_t netif_cfg = {
         .base = &eth_cfg,
         .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH
     };
     s_eth_netif = esp_netif_new(&netif_cfg);
-    if (!s_eth_netif) {
-        ESP_LOGE(TAG, "Failed to create Ethernet netif");
-    } else {
+    
+    if (s_eth_netif) {
         // Initialize Ethernet driver
         uint8_t eth_port_cnt = 0;
         esp_eth_handle_t *eth_handles;
@@ -503,67 +521,25 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
             // Attach Ethernet driver to netif
             ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle)));
             
-            // Start Ethernet with DHCP server
+            // Create bridge: WiFi AP + Ethernet (like WiFi router)
+            ESP_LOGI(TAG, "Creating bridge between WiFi AP and Ethernet...");
+            esp_netif_t *br_netif = esp_netif_create_wifi_ap_bridge();
+            if (br_netif) {
+                void *br_glue = esp_netif_br_glue_new();
+                esp_netif_br_glue_add_port(br_glue, s_ap_netif);
+                esp_netif_br_glue_add_port(br_glue, s_eth_netif);
+                esp_netif_attach(br_netif, br_glue);
+                
+                ESP_LOGI(TAG, "Bridge created: WiFi AP + Ethernet share 192.168.4.x network");
+            }
+            
+            // Start Ethernet
             ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
-            
-            // Configure Ethernet interface with static IP for DHCP server
-            ESP_ERROR_CHECK(esp_netif_dhcpc_stop(s_eth_netif));
-            
-            esp_netif_ip_info_t ip_info = {
-                .ip = {.addr = ESP_IP4TOADDR(192, 168, 5, 1)},
-                .gw = {.addr = ESP_IP4TOADDR(192, 168, 5, 1)},
-                .netmask = {.addr = ESP_IP4TOADDR(255, 255, 255, 0)},
-            };
-            ESP_ERROR_CHECK(esp_netif_set_ip_info(s_eth_netif, &ip_info));
-            
-            // Start DHCP server on Ethernet
-            ESP_ERROR_CHECK(esp_netif_dhcps_start(s_eth_netif));
-            
-            ESP_LOGI(TAG, "Ethernet started with DHCP server at 192.168.5.1");
-            ESP_LOGI(TAG, "Please connect your PC via Ethernet cable");
-            ESP_LOGI(TAG, "PC will get IP 192.168.5.x via DHCP");
-            
-            // Wait for PC to get IP and appear in ARP table (timeout 30 seconds)
-            int wait_count = 0;
-            while (!s_pc_mac_learned && wait_count < 300) {  // 30 seconds
-                vTaskDelay(pdMS_TO_TICKS(100));
-                wait_count++;
-                
-                // Try to get PC MAC from ARP table
-                if (get_pc_mac_from_arp() == ESP_OK) {
-                    break;
-                }
-                
-                // Log progress every 5 seconds
-                if (wait_count % 50 == 0) {
-                    ESP_LOGI(TAG, "Waiting for PC to get IP via DHCP... (%d seconds)", wait_count / 10);
-                }
-            }
-            
-            if (s_pc_mac_learned) {
-                // Save PC MAC to NVS
-                save_eth_mac(s_pc_mac);
-                ESP_LOGI(TAG, "PC MAC learned and saved: %02x:%02x:%02x:%02x:%02x:%02x",
-                         s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
-                         s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
-            } else {
-                ESP_LOGW(TAG, "Timeout waiting for PC MAC");
-                ESP_LOGW(TAG, "Please ensure:");
-                ESP_LOGW(TAG, "  1. PC is connected via Ethernet cable");
-                ESP_LOGW(TAG, "  2. PC network interface is enabled");
-                ESP_LOGW(TAG, "  3. PC is trying to obtain IP (DHCP)");
-            }
+            ESP_LOGI(TAG, "Ethernet started");
         } else {
-            ESP_LOGW(TAG, "No Ethernet interface found or initialization failed");
+            ESP_LOGW(TAG, "Ethernet initialization failed");
         }
     }
-    
-    // ========================================================================
-    // Initialize WiFi for configuration portal
-    // ========================================================================
-    
-    // Create AP netif
-    s_ap_netif = esp_netif_create_default_wifi_ap();
     
     // Create STA netif for scanning and testing connection
     // Note: We don't need to store the netif pointer - it's automatically registered
@@ -616,10 +592,15 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     start_dns_server(&dns_config);
     
     ESP_LOGI(TAG, "Configuration portal ready:");
-    ESP_LOGI(TAG, "  1. Connect PC to Ethernet port (to learn MAC address)");
+    ESP_LOGI(TAG, "  1. Connect PC to Ethernet port (will get IP 192.168.4.x)");
     ESP_LOGI(TAG, "  2. Connect phone to WiFi: %s (no password)", SOFTAP_SSID);
     ESP_LOGI(TAG, "  3. Browser will auto-open or go to: http://192.168.4.1");
-    ESP_LOGI(TAG, "  4. Wait for Ethernet MAC detection, then configure WiFi");
+    ESP_LOGI(TAG, "  4. Both PC and phone share same network (192.168.4.x)");
+    ESP_LOGI(TAG, "  5. System will detect PC MAC from DHCP/ARP automatically");
+    
+    // Monitor ARP table for PC MAC (background task)
+    // PC will send DHCP request when connected, then appear in ARP table
+    ESP_LOGI(TAG, "Monitoring ARP table for PC MAC address...");
     
     return ESP_OK;
 }
