@@ -131,6 +131,26 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 /**
+ * IP event handler
+ * Logs when bridge gets IP from router
+ */
+static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
+                                  int32_t event_id, void *event_data)
+{
+    if (event_id == IP_EVENT_ETH_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        const esp_netif_ip_info_t *ip_info = &event->ip_info;
+        
+        ESP_LOGI(TAG, "~~~~~~~~~~~");
+        ESP_LOGI(TAG, "Bridge Got IP Address");
+        ESP_LOGI(TAG, "IP:" IPSTR, IP2STR(&ip_info->ip));
+        ESP_LOGI(TAG, "MASK:" IPSTR, IP2STR(&ip_info->netmask));
+        ESP_LOGI(TAG, "GW:" IPSTR, IP2STR(&ip_info->gw));
+        ESP_LOGI(TAG, "~~~~~~~~~~~");
+    }
+}
+
+/**
  * Reconfigure button handler task
  */
 static void reconfigure_button_task(void *arg)
@@ -394,6 +414,7 @@ void app_main(void)
     // ========================================================================
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_REMOTE_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, NULL));
     
     // ========================================================================
     // Step 5: Start interfaces
