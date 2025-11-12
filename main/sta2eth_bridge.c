@@ -236,6 +236,19 @@ void app_main(void)
     ESP_LOGI(TAG, "✓ C6 firmware compatible");
     
     // ========================================================================
+    // Initialize event loop and network stack (required for both config and bridge)
+    // ========================================================================
+    ESP_LOGI(TAG, "Initializing event loop and network stack...");
+    
+    // Create default event loop
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    
+    // Initialize TCP/IP network interface
+    ESP_ERROR_CHECK(esp_netif_init());
+    
+    ESP_LOGI(TAG, "✓ Event loop and network stack initialized");
+    
+    // ========================================================================
     // Check if Ethernet MAC and WiFi credentials are saved
     // If not, enter configuration mode
     // ========================================================================
@@ -290,16 +303,6 @@ void app_main(void)
     ESP_LOGI(TAG, "Using MAC address: %02x:%02x:%02x:%02x:%02x:%02x",
              s_common_mac[0], s_common_mac[1], s_common_mac[2],
              s_common_mac[3], s_common_mac[4], s_common_mac[5]);
-    
-    // ========================================================================
-    // Initialize bridge following official ESP-IDF pattern
-    // ========================================================================
-    
-    // Create default event loop
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    
-    // Initialize TCP/IP network interface
-    ESP_ERROR_CHECK(esp_netif_init());
     
     // ========================================================================
     // Step 1: Initialize Ethernet
