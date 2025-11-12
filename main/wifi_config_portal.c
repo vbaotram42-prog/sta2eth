@@ -480,6 +480,32 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 /**
+ * Ethernet packet capture callback
+ * Learns PC MAC from first Ethernet packet (source MAC in frame)
+ */
+static esp_err_t eth_packet_cb(esp_eth_handle_t hdl, uint8_t *buffer, uint32_t len, void *priv)
+{
+    // Only learn once
+    if (!s_pc_mac_learned && len >= 14) {
+        // Ethernet frame format: [Dest MAC: 6 bytes][Source MAC: 6 bytes][Type: 2 bytes][Data...]
+        // Extract source MAC from bytes 6-11
+        memcpy(s_pc_mac, buffer + 6, 6);
+        s_pc_mac_learned = true;
+        
+        ESP_LOGI(TAG, "✓ PC MAC learned from packet: %02x:%02x:%02x:%02x:%02x:%02x",
+                 s_pc_mac[0], s_pc_mac[1], s_pc_mac[2], 
+                 s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
+        
+        // Save to NVS immediately
+        save_eth_mac(s_pc_mac);
+    }
+    
+    // Note: We don't forward packets to network stack during config portal
+    // Just drop them after learning MAC
+    return ESP_OK;
+}
+
+/**
  * Start WiFi configuration portal
  */
 esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, int fail_bit)
@@ -490,55 +516,35 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     s_success_bit = success_bit;
     
     // ========================================================================
-    // Initialize WiFi SoftAP + Ethernet Bridge for configuration portal
-    // Works like a small WiFi router: WiFi and Ethernet on same network (192.168.4.x)
+    // Initialize WiFi SoftAP (for phone configuration)
+    // Initialize Ethernet with packet capture (to learn PC MAC)
     // ========================================================================
-    ESP_LOGI(TAG, "Creating WiFi AP + Ethernet bridge (like WiFi router)");
-    ESP_LOGI(TAG, "Both phone (WiFi) and PC (Ethernet) will get IP from 192.168.4.1");
+    ESP_LOGI(TAG, "Starting configuration portal:");
+    ESP_LOGI(TAG, "  - WiFi SoftAP for phone (192.168.4.1)");
+    ESP_LOGI(TAG, "  - Ethernet packet capture to learn PC MAC");
     
-    // Create AP netif (192.168.4.1 with DHCP server)
+    // Create AP netif (192.168.4.1 with DHCP server) - for phone only
     s_ap_netif = esp_netif_create_default_wifi_ap();
     
-    // Initialize Ethernet
-    ESP_LOGI(TAG, "Initializing Ethernet interface...");
-    esp_netif_inherent_config_t eth_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
-    esp_netif_config_t netif_cfg = {
-        .base = &eth_cfg,
-        .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH
-    };
-    s_eth_netif = esp_netif_new(&netif_cfg);
+    // Initialize Ethernet with packet capture callback (no IP assignment)
+    ESP_LOGI(TAG, "Initializing Ethernet to capture PC MAC...");
+    uint8_t eth_port_cnt = 0;
+    esp_eth_handle_t *eth_handles;
+    esp_err_t ret = ethernet_init_all(&eth_handles, &eth_port_cnt);
     
-    if (s_eth_netif) {
-        // Initialize Ethernet driver
-        uint8_t eth_port_cnt = 0;
-        esp_eth_handle_t *eth_handles;
-        esp_err_t ret = ethernet_init_all(&eth_handles, &eth_port_cnt);
+    if (ret == ESP_OK && eth_port_cnt > 0) {
+        s_eth_handle = eth_handles[0];
+        free(eth_handles);
         
-        if (ret == ESP_OK && eth_port_cnt > 0) {
-            s_eth_handle = eth_handles[0];
-            free(eth_handles);
-            
-            // Attach Ethernet driver to netif
-            ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle)));
-            
-            // Create bridge: WiFi AP + Ethernet (like WiFi router)
-            ESP_LOGI(TAG, "Creating bridge between WiFi AP and Ethernet...");
-            esp_netif_t *br_netif = esp_netif_create_wifi_ap_bridge();
-            if (br_netif) {
-                void *br_glue = esp_netif_br_glue_new();
-                esp_netif_br_glue_add_port(br_glue, s_ap_netif);
-                esp_netif_br_glue_add_port(br_glue, s_eth_netif);
-                esp_netif_attach(br_netif, br_glue);
-                
-                ESP_LOGI(TAG, "Bridge created: WiFi AP + Ethernet share 192.168.4.x network");
-            }
-            
-            // Start Ethernet
-            ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
-            ESP_LOGI(TAG, "Ethernet started");
-        } else {
-            ESP_LOGW(TAG, "Ethernet initialization failed");
-        }
+        // Install packet capture callback to learn PC MAC
+        ESP_LOGI(TAG, "Installing packet capture callback...");
+        esp_eth_update_input_path(s_eth_handle, eth_packet_cb, NULL);
+        
+        // Start Ethernet
+        ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
+        ESP_LOGI(TAG, "Ethernet started - waiting for PC to send packet...");
+    } else {
+        ESP_LOGW(TAG, "Ethernet initialization failed");
     }
     
     // Create STA netif for scanning and testing connection
