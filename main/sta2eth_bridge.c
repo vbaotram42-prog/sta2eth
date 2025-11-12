@@ -7,18 +7,13 @@
 /**
  * sta2eth L2 Bridge (ESP32-P4 + C6)
  * 
- * Strategy: Learn PC's MAC from first Ethernet packet, use it for all interfaces
+ * Following the official ESP-IDF bridge example:
+ * https://github.com/espressif/esp-idf/tree/master/examples/network/bridge
  * 
  * Architecture:
- * 1. Initialize Ethernet, capture first packet to learn PC MAC
- * 2. Use PC's MAC for both Ethernet and WiFi interfaces
- * 3. Create L2 bridge with PC's MAC
- * 4. Bridge does NOT get IP (DHCP disabled on bridge)
- * 5. Only PC gets IP from router (transparent bridging)
- * 
- * Network view:
- *   [PC with PC_MAC] <--ETH--> [Bridge with PC_MAC] <--WiFi--> [Router]
- *   Router sees single MAC, assigns IP to PC only
+ * 1. During first boot: Configuration portal learns Ethernet MAC and WiFi credentials
+ * 2. Normal operation: Use saved MAC for both Ethernet and WiFi, create L2 bridge
+ * 3. Transparent bridging between Ethernet and WiFi with same MAC address
  */
 
 #include <string.h>
@@ -57,38 +52,10 @@ static esp_netif_t *s_eth_netif = NULL;
 static esp_netif_t *s_wifi_netif = NULL;
 static esp_netif_t *s_br_netif = NULL;
 static esp_eth_handle_t s_eth_handle = NULL;
-static uint8_t s_pc_mac[6] = {0};  // PC's MAC learned from first packet
-static bool s_mac_learned = false;
+static uint8_t s_common_mac[6] = {0};  // Saved MAC used for both interfaces
 
 // Reconfigure button GPIO (Boot button)
 #define RECONFIGURE_BUTTON_GPIO 2
-
-/**
- * Ethernet packet receive callback for MAC learning
- * Captures first packet from PC to learn its MAC address
- */
-static esp_err_t eth_packet_receive_cb(esp_eth_handle_t hdl, uint8_t *buffer, uint32_t length, void *priv)
-{
-    if (!s_mac_learned && length >= 14) {
-        // Extract source MAC from Ethernet frame (bytes 6-11)
-        memcpy(s_pc_mac, buffer + 6, 6);
-        s_mac_learned = true;
-        
-        // Save PC MAC to NVS
-        save_eth_mac(s_pc_mac);
-        
-        ESP_LOGI(TAG, "===========================================");
-        ESP_LOGI(TAG, "PC MAC Address Learned!");
-        ESP_LOGI(TAG, "MAC: %02x:%02x:%02x:%02x:%02x:%02x",
-                 s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
-                 s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
-        ESP_LOGI(TAG, "===========================================");
-    }
-    
-    // Free the buffer
-    free(buffer);
-    return ESP_OK;
-}
 
 
 /**
@@ -141,10 +108,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             break;
         case WIFI_EVENT_STA_DISCONNECTED:
             // Re-set MAC address before reconnection
+            // MAC is stored in C6's RAM (WIFI_STORAGE_RAM) and may be lost
             ESP_LOGI(TAG, "WiFi disconnected, re-setting MAC: %02x:%02x:%02x:%02x:%02x:%02x",
-                     s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
-                     s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
-            esp_wifi_set_mac(WIFI_IF_STA, s_pc_mac);
+                     s_common_mac[0], s_common_mac[1], s_common_mac[2],
+                     s_common_mac[3], s_common_mac[4], s_common_mac[5]);
+            esp_wifi_set_mac(WIFI_IF_STA, s_common_mac);
             
             if (s_wifi_retry_num < WIFI_MAXIMUM_RETRY) {
                 esp_wifi_remote_connect();
@@ -163,16 +131,24 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 /**
- * IP event handler - NOT USED
- * Bridge does not need IP, only PC needs IP
+ * IP event handler
+ * Logs when bridge gets IP from router
  */
-/*
 static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
                                   int32_t event_id, void *event_data)
 {
-    // Disabled - bridge should not get IP
+    if (event_id == IP_EVENT_ETH_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        const esp_netif_ip_info_t *ip_info = &event->ip_info;
+        
+        ESP_LOGI(TAG, "~~~~~~~~~~~");
+        ESP_LOGI(TAG, "Bridge Got IP Address");
+        ESP_LOGI(TAG, "IP:" IPSTR, IP2STR(&ip_info->ip));
+        ESP_LOGI(TAG, "MASK:" IPSTR, IP2STR(&ip_info->netmask));
+        ESP_LOGI(TAG, "GW:" IPSTR, IP2STR(&ip_info->gw));
+        ESP_LOGI(TAG, "~~~~~~~~~~~");
+    }
 }
-*/
 
 /**
  * Reconfigure button handler task
@@ -260,26 +236,26 @@ void app_main(void)
     ESP_LOGI(TAG, "✓ C6 firmware compatible");
     
     // ========================================================================
-    // Check if PC MAC is saved in NVS
-    // If not saved OR WiFi not configured, need to reconfigure
+    // Check if Ethernet MAC and WiFi credentials are saved
+    // If not, enter configuration mode
     // ========================================================================
-    bool mac_in_nvs = (load_eth_mac(s_pc_mac) == ESP_OK);
+    bool eth_mac_saved = is_eth_mac_saved();
     bool wifi_configured = is_wifi_provisioned();
     
-    if (mac_in_nvs) {
-        s_mac_learned = true;
-        ESP_LOGI(TAG, "PC MAC loaded from NVS: %02x:%02x:%02x:%02x:%02x:%02x",
-                 s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
-                 s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
-    }
-    
-    if (!wifi_configured) {
+    if (!eth_mac_saved || !wifi_configured) {
         ESP_LOGI(TAG, "===========================================");
-        ESP_LOGI(TAG, "  WiFi Configuration Required");
+        ESP_LOGI(TAG, "  Configuration Required");
         ESP_LOGI(TAG, "===========================================");
+        if (!eth_mac_saved) {
+            ESP_LOGI(TAG, "✗ Ethernet MAC not saved");
+        }
+        if (!wifi_configured) {
+            ESP_LOGI(TAG, "✗ WiFi not configured");
+        }
         ESP_LOGI(TAG, "Starting configuration portal...");
         
-        // Start configuration portal for WiFi credentials only
+        // Start configuration portal (SoftAP + Ethernet)
+        // This will save both Ethernet MAC and WiFi credentials
         ESP_ERROR_CHECK(start_wifi_config_portal(&s_event_flags, PROV_SUCCESS_BIT, PROV_FAIL_BIT));
         
         // Wait for configuration to complete
@@ -298,7 +274,22 @@ void app_main(void)
         esp_restart();
     }
     
-    ESP_LOGI(TAG, "✓ WiFi credentials found");
+    ESP_LOGI(TAG, "✓ Ethernet MAC and WiFi credentials found");
+    
+    // ========================================================================
+    // Load saved Ethernet MAC address
+    // ========================================================================
+    ret = load_eth_mac(s_common_mac);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to load Ethernet MAC - entering config mode");
+        ESP_LOGI(TAG, "Please long-press button to reconfigure");
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        esp_restart();
+    }
+    
+    ESP_LOGI(TAG, "Using MAC address: %02x:%02x:%02x:%02x:%02x:%02x",
+             s_common_mac[0], s_common_mac[1], s_common_mac[2],
+             s_common_mac[3], s_common_mac[4], s_common_mac[5]);
     
     // ========================================================================
     // Initialize bridge following official ESP-IDF pattern
@@ -312,7 +303,6 @@ void app_main(void)
     
     // ========================================================================
     // Step 1: Initialize Ethernet
-    // If MAC not learned yet, will capture first packet
     // ========================================================================
     ESP_LOGI(TAG, "Step 1: Initializing Ethernet...");
     
@@ -328,21 +318,12 @@ void app_main(void)
     s_eth_handle = eth_handles[0];
     free(eth_handles);
     
-    // If MAC not learned, register packet callback
-    if (!s_mac_learned) {
-        ESP_LOGI(TAG, "PC MAC not learned yet, enabling packet capture...");
-        ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, eth_packet_receive_cb, NULL));
-    }
+    // Set Ethernet MAC to the saved common MAC
+    ESP_ERROR_CHECK(esp_eth_ioctl(s_eth_handle, ETH_CMD_S_MAC_ADDR, s_common_mac));
     
-    // Enable promiscuous mode
-    bool promiscuous = true;
-    ESP_ERROR_CHECK(esp_eth_ioctl(s_eth_handle, ETH_CMD_S_PROMISCUOUS, &promiscuous));
-    
-    // Create Ethernet netif (flags = 0 for bridged port, DHCP disabled)
+    // Create Ethernet netif (flags = 0 for bridged port)
     esp_netif_inherent_config_t eth_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
     eth_cfg.flags = 0;  // No flags for bridged port
-    eth_cfg.if_desc = "eth0";
-    eth_cfg.route_prio = 50;
     esp_netif_config_t eth_netif_cfg = {
         .base = &eth_cfg,
         .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH
@@ -352,34 +333,7 @@ void app_main(void)
     // Attach Ethernet driver to netif
     ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle)));
     
-    // Start Ethernet
-    ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
-    
-    // If MAC not learned, wait for first packet
-    if (!s_mac_learned) {
-        ESP_LOGI(TAG, "Waiting for first packet from PC to learn MAC...");
-        ESP_LOGI(TAG, "Please ensure PC is connected and sending traffic");
-        
-        // Wait up to 30 seconds for MAC learning
-        uint32_t wait_ms = 0;
-        while (!s_mac_learned && wait_ms < 30000) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            wait_ms += 100;
-        }
-        
-        if (!s_mac_learned) {
-            ESP_LOGE(TAG, "Failed to learn PC MAC - no packets received");
-            ESP_LOGE(TAG, "Please check Ethernet connection and restart");
-            return;
-        }
-        
-        ESP_LOGI(TAG, "✓ PC MAC learned and saved to NVS");
-    }
-    
-    // Set Ethernet MAC to PC's MAC
-    ESP_ERROR_CHECK(esp_eth_ioctl(s_eth_handle, ETH_CMD_S_MAC_ADDR, s_pc_mac));
-    
-    ESP_LOGI(TAG, "✓ Ethernet initialized with PC MAC");
+    ESP_LOGI(TAG, "✓ Ethernet initialized");
     
     // ========================================================================
     // Step 2: Initialize WiFi
@@ -396,17 +350,12 @@ void app_main(void)
     // Set WiFi mode to STA
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     
-    // CRITICAL: Set WiFi STA MAC to PC's MAC
-    ESP_LOGI(TAG, "Setting WiFi MAC to PC MAC: %02x:%02x:%02x:%02x:%02x:%02x",
-             s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
-             s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, s_pc_mac));
+    // Set WiFi STA MAC to the same common MAC
+    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, s_common_mac));
     
-    // Create WiFi STA netif (flags = 0 for bridged port, DHCP disabled)
+    // Create WiFi STA netif (flags = 0 for bridged port)
     esp_netif_inherent_config_t wifi_sta_cfg = ESP_NETIF_INHERENT_DEFAULT_WIFI_STA();
     wifi_sta_cfg.flags = 0;  // No flags for bridged port
-    wifi_sta_cfg.if_desc = "wlan0";
-    wifi_sta_cfg.route_prio = 49;
     s_wifi_netif = esp_netif_create_wifi(WIFI_IF_STA, &wifi_sta_cfg);
     ESP_ERROR_CHECK(esp_wifi_set_default_wifi_sta_handlers());
     
@@ -427,15 +376,12 @@ void app_main(void)
     ESP_LOGI(TAG, "✓ WiFi initialized (SSID: %s)", ssid);
     
     // ========================================================================
-    // Step 3: Create Bridge (WITHOUT DHCP client)
-    // Bridge should NOT get IP - only PC gets IP
+    // Step 3: Create Bridge
     // ========================================================================
-    ESP_LOGI(TAG, "Step 3: Creating bridge (DHCP disabled)...");
+    ESP_LOGI(TAG, "Step 3: Creating bridge...");
     
-    // Create bridge netif configuration WITHOUT DHCP
+    // Create bridge netif configuration
     esp_netif_inherent_config_t br_cfg = ESP_NETIF_INHERENT_DEFAULT_BR();
-    br_cfg.flags &= ~ESP_NETIF_DHCP_CLIENT;  // Disable DHCP client on bridge
-    br_cfg.if_desc = "br0";
     esp_netif_config_t br_netif_cfg = {
         .base = &br_cfg,
         .stack = ESP_NETIF_NETSTACK_DEFAULT_BR,
@@ -449,12 +395,9 @@ void app_main(void)
     };
     br_cfg.bridge_info = &bridgeif_config;
     
-    // Set bridge MAC to PC's MAC
-    memcpy(br_cfg.mac, s_pc_mac, 6);
+    // Set bridge MAC to the common MAC
+    memcpy(br_cfg.mac, s_common_mac, 6);
     s_br_netif = esp_netif_new(&br_netif_cfg);
-    
-    // Disable DHCP client on bridge netif
-    esp_netif_dhcpc_stop(s_br_netif);
     
     // Create bridge glue and add ports
     esp_netif_br_glue_handle_t br_glue = esp_netif_br_glue_new();
@@ -464,18 +407,27 @@ void app_main(void)
     // Attach bridge glue to bridge netif
     ESP_ERROR_CHECK(esp_netif_attach(s_br_netif, br_glue));
     
-    ESP_LOGI(TAG, "✓ Bridge created (DHCP client disabled)");
+    ESP_LOGI(TAG, "✓ Bridge created");
     
     // ========================================================================
-    // Step 4: Register event handlers (NO IP event handler)
+    // Step 4: Register event handlers
     // ========================================================================
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_REMOTE_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, NULL));
     
     // ========================================================================
-    // Step 5: Start WiFi (Ethernet already started)
+    // Step 5: Start interfaces
     // ========================================================================
-    ESP_LOGI(TAG, "Step 4: Starting WiFi...");
+    ESP_LOGI(TAG, "Step 4: Starting interfaces...");
+    
+    // Enable promiscuous mode on Ethernet for bridge
+    bool promiscuous = true;
+    ESP_ERROR_CHECK(esp_eth_ioctl(s_eth_handle, ETH_CMD_S_PROMISCUOUS, &promiscuous));
+    
+    // Start Ethernet
+    ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
+    ESP_LOGI(TAG, "✓ Ethernet started");
     
     // Start WiFi (will connect automatically)
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -490,16 +442,15 @@ void app_main(void)
     ESP_LOGI(TAG, "===========================================");
     ESP_LOGI(TAG, "  Bridge Operational!");
     ESP_LOGI(TAG, "===========================================");
-    ESP_LOGI(TAG, "PC MAC: %02x:%02x:%02x:%02x:%02x:%02x",
-             s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
-             s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
+    ESP_LOGI(TAG, "MAC Address: %02x:%02x:%02x:%02x:%02x:%02x",
+             s_common_mac[0], s_common_mac[1], s_common_mac[2],
+             s_common_mac[3], s_common_mac[4], s_common_mac[5]);
     ESP_LOGI(TAG, "WiFi: %s", ssid);
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "Note: Bridge does NOT get IP - only PC gets IP");
     ESP_LOGI(TAG, "To reconfigure: Long-press button for 2 seconds");
     ESP_LOGI(TAG, "===========================================");
     
-    // Monitor
+    // Monitor and handle reconnection
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }

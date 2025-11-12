@@ -92,8 +92,8 @@ static const char config_page_html[] =
 "<div class='content'>"
 "<div class='eth-prompt' id='ethPrompt'>"
 "<h3><span>🔌</span>Important: Connect Ethernet Cable</h3>"
-"<p>Please connect your PC/device to the Ethernet port.</p>"
-"<p>The system will detect the P4's Ethernet hardware MAC address.</p>"
+"<p>Please connect your PC/device to the Ethernet port of this device.</p>"
+"<p>The system will learn the MAC address from your Ethernet connection.</p>"
 "<p id='ethMacStatus'>Checking Ethernet connection...</p>"
 "</div>"
 "<button class='btn' onclick='scanNetworks()' id='scanBtn'>📡 Scan Networks</button>"
@@ -437,10 +437,9 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     s_success_bit = success_bit;
     
     // ========================================================================
-    // Initialize Ethernet to get P4's Ethernet PHY MAC address
-    // Note: This is NOT the PC's MAC - it's the P4's own Ethernet hardware MAC
+    // Initialize Ethernet to get MAC address
     // ========================================================================
-    ESP_LOGI(TAG, "Initializing Ethernet to obtain P4's Ethernet PHY MAC address...");
+    ESP_LOGI(TAG, "Initializing Ethernet to obtain MAC address...");
     
     // Create Ethernet netif with DHCP client
     s_eth_netif = esp_netif_create_default_eth();
@@ -465,13 +464,13 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
             // Wait briefly for Ethernet link to come up
             vTaskDelay(pdMS_TO_TICKS(1000));
             
-            // Get P4's Ethernet PHY MAC address
+            // Get Ethernet MAC address
             uint8_t eth_mac[6];
             ret = esp_eth_ioctl(s_eth_handle, ETH_CMD_G_MAC_ADDR, eth_mac);
             if (ret == ESP_OK) {
-                // Save P4's ETH MAC to NVS
+                // Save MAC to NVS
                 save_eth_mac(eth_mac);
-                ESP_LOGI(TAG, "P4's Ethernet PHY MAC saved to NVS: %02x:%02x:%02x:%02x:%02x:%02x",
+                ESP_LOGI(TAG, "Ethernet MAC saved: %02x:%02x:%02x:%02x:%02x:%02x",
                          eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]);
             } else {
                 ESP_LOGW(TAG, "Failed to get Ethernet MAC: %s", esp_err_to_name(ret));
