@@ -13,6 +13,11 @@ CONFIG_LWIP_NUM_NETIF_CLIENT_DATA=2
 # Enable L2 to L3 copy (required for bridge to work properly)
 CONFIG_LWIP_L2_TO_L3_COPY=y
 
+# ==================== ESP-Hosted Network Split (CRITICAL) ====================
+# Enable network split for esp-hosted bridge support
+# This allows C6 WiFi to work as a proper bridge port with packet filtering
+CONFIG_ESP_HOSTED_NETWORK_SPLIT_ENABLED=y
+
 # ==================== Network Stack Configuration ====================
 # Reasonable socket limit for bridge operation
 CONFIG_LWIP_MAX_SOCKETS=16
