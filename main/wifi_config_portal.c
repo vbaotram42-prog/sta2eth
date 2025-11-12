@@ -40,6 +40,10 @@ static esp_netif_t *s_ap_netif = NULL;
 static esp_netif_t *s_eth_netif = NULL;
 static esp_eth_handle_t s_eth_handle = NULL;
 
+// PC MAC learning state
+static bool s_pc_mac_learned = false;
+static uint8_t s_pc_mac[6] = {0};
+
 // SoftAP configuration
 #define SOFTAP_SSID       "ESP32-P4-Config"
 #define SOFTAP_CHANNEL    6
@@ -151,6 +155,31 @@ static const char config_page_html[] =
 "}}).catch(()=>setTimeout(checkEthMac,2000));}"
 "window.onload=function(){scanNetworks();checkEthMac();};"
 "</script></body></html>";
+
+/**
+ * Ethernet packet callback to learn PC's MAC address
+ * Captures the source MAC from the first incoming packet
+ */
+static esp_err_t eth_packet_callback(esp_eth_handle_t hdl, uint8_t *buffer, uint32_t length, void *priv)
+{
+    // Only learn MAC once
+    if (s_pc_mac_learned) {
+        // Pass packet to network stack
+        return esp_netif_receive(s_eth_netif, buffer, length, NULL);
+    }
+    
+    // Extract source MAC from Ethernet frame (bytes 6-11)
+    if (length >= 14) {  // Minimum Ethernet frame size
+        memcpy(s_pc_mac, buffer + 6, 6);
+        s_pc_mac_learned = true;
+        ESP_LOGI(TAG, "PC MAC learned from packet: %02x:%02x:%02x:%02x:%02x:%02x",
+                 s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
+                 s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
+    }
+    
+    // Pass packet to network stack
+    return esp_netif_receive(s_eth_netif, buffer, length, NULL);
+}
 
 /**
  * Root page handler
@@ -350,7 +379,7 @@ static esp_err_t connect_handler(httpd_req_t *req)
 
 /**
  * Ethernet MAC status handler
- * Returns the status of Ethernet MAC learning
+ * Returns the status of PC MAC learning (learned from first Ethernet packet)
  */
 static esp_err_t eth_mac_status_handler(httpd_req_t *req)
 {
@@ -437,10 +466,10 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     s_success_bit = success_bit;
     
     // ========================================================================
-    // Initialize Ethernet to get MAC address
-    // Following official ESP-IDF bridge example pattern
+    // Initialize Ethernet to learn PC's MAC address (from first packet)
     // ========================================================================
-    ESP_LOGI(TAG, "Initializing Ethernet to obtain MAC address...");
+    ESP_LOGI(TAG, "Initializing Ethernet to learn PC MAC address...");
+    ESP_LOGI(TAG, "NOTE: Learning PC's MAC from first packet, NOT P4's Ethernet PHY MAC");
     
     // Create Ethernet netif (same as official bridge example)
     esp_netif_inherent_config_t eth_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
@@ -464,22 +493,40 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
             // Attach Ethernet driver to netif
             ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle)));
             
+            // Install packet capture callback to learn PC MAC
+            ESP_LOGI(TAG, "Installing packet callback to learn PC MAC address...");
+            ESP_ERROR_CHECK(esp_eth_update_input_path(s_eth_handle, eth_packet_callback, NULL));
+            
             // Start Ethernet
             ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
             
-            // Wait briefly for Ethernet link to come up
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            ESP_LOGI(TAG, "Ethernet started - waiting for PC to send first packet...");
+            ESP_LOGI(TAG, "Please ensure your PC is connected via Ethernet cable");
             
-            // Get Ethernet MAC address
-            uint8_t eth_mac[6];
-            ret = esp_eth_ioctl(s_eth_handle, ETH_CMD_G_MAC_ADDR, eth_mac);
-            if (ret == ESP_OK) {
-                // Save MAC to NVS
-                save_eth_mac(eth_mac);
-                ESP_LOGI(TAG, "Ethernet MAC saved: %02x:%02x:%02x:%02x:%02x:%02x",
-                         eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]);
+            // Wait for PC MAC to be learned (timeout 30 seconds)
+            int wait_count = 0;
+            while (!s_pc_mac_learned && wait_count < 300) {  // 30 seconds
+                vTaskDelay(pdMS_TO_TICKS(100));
+                wait_count++;
+                
+                // Log progress every 5 seconds
+                if (wait_count % 50 == 0) {
+                    ESP_LOGI(TAG, "Still waiting for PC packet... (%d seconds)", wait_count / 10);
+                }
+            }
+            
+            if (s_pc_mac_learned) {
+                // Save PC MAC to NVS
+                save_eth_mac(s_pc_mac);
+                ESP_LOGI(TAG, "PC MAC learned and saved: %02x:%02x:%02x:%02x:%02x:%02x",
+                         s_pc_mac[0], s_pc_mac[1], s_pc_mac[2],
+                         s_pc_mac[3], s_pc_mac[4], s_pc_mac[5]);
             } else {
-                ESP_LOGW(TAG, "Failed to get Ethernet MAC: %s", esp_err_to_name(ret));
+                ESP_LOGW(TAG, "Timeout waiting for PC MAC");
+                ESP_LOGW(TAG, "Please ensure:");
+                ESP_LOGW(TAG, "  1. PC is connected via Ethernet cable");
+                ESP_LOGW(TAG, "  2. PC network interface is enabled");
+                ESP_LOGW(TAG, "  3. PC is trying to obtain IP (DHCP)");
             }
         } else {
             ESP_LOGW(TAG, "No Ethernet interface found or initialization failed");
