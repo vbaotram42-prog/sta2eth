@@ -441,8 +441,13 @@ esp_err_t start_wifi_config_portal(EventGroupHandle_t *flags, int success_bit, i
     // ========================================================================
     ESP_LOGI(TAG, "Initializing Ethernet to obtain MAC address...");
     
-    // Create Ethernet netif with DHCP client
-    s_eth_netif = esp_netif_create_default_eth();
+    // Create Ethernet netif manually (no default function exists)
+    esp_netif_inherent_config_t eth_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
+    esp_netif_config_t netif_cfg = {
+        .base = &eth_cfg,
+        .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH
+    };
+    s_eth_netif = esp_netif_new(&netif_cfg);
     if (!s_eth_netif) {
         ESP_LOGE(TAG, "Failed to create Ethernet netif");
     } else {

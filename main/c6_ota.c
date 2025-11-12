@@ -109,6 +109,9 @@ static esp_err_t c6_get_firmware_version(firmware_version_t *version, uint32_t t
                  version->major, version->minor, version->patch);
         
         return ESP_OK;  // Success
+        
+        // Wait before next retry (this line won't be reached in current placeholder implementation)
+        vTaskDelay(pdMS_TO_TICKS(retry_interval_ms));
     }
     
     ESP_LOGW(TAG, "Failed to get C6 firmware version after %lu attempts", retry_count);
