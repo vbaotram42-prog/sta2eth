@@ -412,8 +412,50 @@ void app_main(void)
     
     // Create bridge glue and add ports
     esp_netif_br_glue_handle_t br_glue = esp_netif_br_glue_new();
+    // Assign link-local IPs to bridge ports (169.254.x.x - won't conflict with any network)
+    esp_netif_ip_info_t eth_ip = {
+        .ip = { .addr = ESP_IP4TOADDR(169, 254, 1, 1) },
+        .netmask = { .addr = ESP_IP4TOADDR(255, 255, 0, 0) },
+        .gw = { .addr = ESP_IP4TOADDR(169, 254, 1, 1) }
+    };
+    ESP_ERROR_CHECK(esp_netif_dhcpc_stop(s_eth_netif));
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_eth_netif, &eth_ip));
+    ESP_LOGI(TAG, "Ethernet port: 169.254.1.1/16");
+
+    esp_netif_ip_info_t wifi_ip = {
+        .ip = { .addr = ESP_IP4TOADDR(169, 254, 1, 2) },
+        .netmask = { .addr = ESP_IP4TOADDR(255, 255, 0, 0) },
+        .gw = { .addr = ESP_IP4TOADDR(169, 254, 1, 2) }
+    };
+    ESP_ERROR_CHECK(esp_netif_dhcpc_stop(s_wifi_netif));
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_wifi_netif, &wifi_ip));
+    ESP_LOGI(TAG, "WiFi port: 169.254.1.2/16");
+
     ESP_ERROR_CHECK(esp_netif_br_glue_add_port(br_glue, s_eth_netif));
     ESP_ERROR_CHECK(esp_netif_br_glue_add_port(br_glue, s_wifi_netif));
+
+    // Assign link-local static IPs to bridge ports (169.254.x.x - won't conflict with any network)
+    // These IPs are for internal bridge management only, not visible to PC or router
+    
+    // Ethernet netif: 169.254.1.1/16
+    esp_netif_ip_info_t eth_ip = {
+        .ip = { .addr = ESP_IP4TOADDR(169, 254, 1, 1) },
+        .netmask = { .addr = ESP_IP4TOADDR(255, 255, 0, 0) },
+        .gw = { .addr = ESP_IP4TOADDR(169, 254, 1, 1) }
+    };
+    esp_netif_dhcpc_stop(s_eth_netif);
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_eth_netif, &eth_ip));
+    ESP_LOGI(TAG, "Ethernet port IP: 169.254.1.1/16");
+
+    // WiFi netif: 169.254.1.2/16
+    esp_netif_ip_info_t wifi_ip = {
+        .ip = { .addr = ESP_IP4TOADDR(169, 254, 1, 2) },
+        .netmask = { .addr = ESP_IP4TOADDR(255, 255, 0, 0) },
+        .gw = { .addr = ESP_IP4TOADDR(169, 254, 1, 2) }
+    };
+    esp_netif_dhcpc_stop(s_wifi_netif);
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_wifi_netif, &wifi_ip));
+    ESP_LOGI(TAG, "WiFi port IP: 169.254.1.2/16");
     
     // Attach bridge glue to bridge netif
     ESP_ERROR_CHECK(esp_netif_attach(s_br_netif, br_glue));
