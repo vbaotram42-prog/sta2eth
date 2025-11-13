@@ -34,6 +34,11 @@
 #include "wifi_config_portal.h"
 #include "c6_ota.h"
 
+// Forward declarations for esp_wifi_remote internal netif functions
+// These are not in the public API but are needed for bridge configuration
+extern esp_netif_t* esp_netif_create_wifi_remote(wifi_interface_t wifi_if, const esp_netif_inherent_config_t *esp_netif_config);
+extern esp_err_t esp_wifi_set_default_wifi_remote_sta_handlers(void);
+
 static const char *TAG = "sta2eth";
 
 // Event flags
@@ -356,11 +361,14 @@ void app_main(void)
     // Set WiFi STA MAC to the same common MAC
     ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, s_common_mac));
     
-    // Create WiFi STA netif (flags = 0 for bridged port)
+    // Create WiFi STA netif for esp_wifi_remote (flags = 0 for bridged port)
+    // IMPORTANT: For C6 in slave mode, use esp_wifi_remote netif creation functions
     esp_netif_inherent_config_t wifi_sta_cfg = ESP_NETIF_INHERENT_DEFAULT_WIFI_STA();
     wifi_sta_cfg.flags = 0;  // No flags for bridged port
-    s_wifi_netif = esp_netif_create_wifi(WIFI_IF_STA, &wifi_sta_cfg);
-    ESP_ERROR_CHECK(esp_wifi_set_default_wifi_sta_handlers());
+    wifi_sta_cfg.if_key = "WIFI_STA_RMT";
+    wifi_sta_cfg.if_desc = "wifi_sta_remote";
+    s_wifi_netif = esp_netif_create_wifi_remote(WIFI_IF_STA, &wifi_sta_cfg);
+    ESP_ERROR_CHECK(esp_wifi_set_default_wifi_remote_sta_handlers());
     
     // Load and set WiFi credentials
     char ssid[33] = {0};
