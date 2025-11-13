@@ -529,7 +529,8 @@ void app_main(void)
     s_eth_handle = eth_handles[0];
     free(eth_handles);
     
-    // Set Ethernet MAC to the saved common MAC
+    // Set Ethernet MAC to the saved common MAC (PC's MAC)
+    // This makes the Ethernet port appear as the PC to the network
     ESP_ERROR_CHECK(esp_eth_ioctl(s_eth_handle, ETH_CMD_S_MAC_ADDR, s_common_mac));
     
     // Create Ethernet netif (flags = 0 for bridged port)
@@ -578,8 +579,14 @@ void app_main(void)
     // Set WiFi mode to STA
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     
-    // Set WiFi STA MAC to the same common MAC
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, s_common_mac));
+    // IMPORTANT: Do NOT set WiFi MAC to match Ethernet MAC!
+    // WiFi should keep its own MAC address (C6's MAC) so that:
+    // 1. Bridge FDB can distinguish between devices on different ports
+    // 2. When PC (Ethernet MAC) and Router communicate, bridge learns:
+    //    - PC's MAC → Ethernet port
+    //    - Router's MAC → WiFi port
+    // 3. In HOST_LWIP_BRIDGE mode, C6 forwards all frames regardless of MAC
+    // 4. Bridge uses promiscuous mode to receive all frames on both ports
     
     // Create WiFi STA netif (flags = 0 for bridged port)
     // When using esp_wifi_remote, the standard esp_netif_create_wifi() is overridden
@@ -636,6 +643,11 @@ void app_main(void)
     br_cfg.bridge_info = &bridgeif_config;
     
     // Set bridge MAC to the common MAC (PC's MAC)
+    // Bridge uses PC's MAC so it appears as the PC to both Ethernet and WiFi networks
+    // Note: Port MACs are different:
+    //   - Ethernet port: PC's MAC (s_common_mac)
+    //   - WiFi port: C6's own MAC (not changed)
+    // This allows FDB to properly learn which devices are on which ports
     memcpy(br_cfg.mac, s_common_mac, 6);
     s_br_netif = esp_netif_new(&br_netif_cfg);
     
