@@ -33,6 +33,7 @@
 #include "ethernet_init.h"
 #include "wifi_config_portal.h"
 #include "c6_ota.h"
+#include "lwip/def.h"  // For htons/ntohs
 
 static const char *TAG = "sta2eth";
 
@@ -56,6 +57,10 @@ static uint8_t s_common_mac[6] = {0};  // Saved MAC used for both interfaces
 
 // Reconfigure button GPIO (Boot button)
 #define RECONFIGURE_BUTTON_GPIO 2
+
+// Bridge diagnostic configuration
+#define ENABLE_BRIDGE_DIAGNOSTICS 1
+#define DIAGNOSTIC_INTERVAL_MS 5000  // Send test packets every 5 seconds
 
 
 /**
@@ -195,6 +200,122 @@ static void reconfigure_button_task(void *arg)
     }
 }
 
+#if ENABLE_BRIDGE_DIAGNOSTICS
+/**
+ * Bridge Diagnostic Functions
+ * Send broadcast packets to test Ethernet driver (EMAC/IP101)
+ * 
+ * Note: Direct packet transmission through esp_netif is not supported in ESP-IDF.
+ * Bridge diagnostics test the Ethernet driver directly.
+ */
+
+/**
+ * Send raw Ethernet broadcast frame
+ */
+static esp_err_t send_raw_broadcast(esp_eth_handle_t eth_handle, const char *iface_name, const uint8_t *src_mac)
+{
+    if (!eth_handle || !src_mac) {
+        ESP_LOGE(TAG, "[DIAG] Invalid parameters for raw %s", iface_name);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Simple Ethernet broadcast frame with custom EtherType
+    uint8_t frame[64];
+    memset(frame, 0, sizeof(frame));
+    
+    // Destination MAC: broadcast
+    memset(frame, 0xff, 6);
+    // Source MAC
+    memcpy(frame + 6, src_mac, 6);
+    // EtherType: custom test type (0x88B5 - local experimental)
+    frame[12] = 0x88;
+    frame[13] = 0xB5;
+    // Payload: "BRIDGE_TEST" + timestamp
+    const char *payload = "BRIDGE_TEST_PACKET";
+    memcpy(frame + 14, payload, strlen(payload));
+    
+    ESP_LOGI(TAG, "[DIAG] Sending raw broadcast via %s (EMAC):", iface_name);
+    ESP_LOGI(TAG, "       Src MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+             src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]);
+    ESP_LOGI(TAG, "       EtherType: 0x88B5 (test), Payload: %s", payload);
+    
+    // Transmit directly through Ethernet driver
+    esp_err_t ret = esp_eth_transmit(eth_handle, frame, sizeof(frame));
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "[DIAG] ✓ Raw frame transmitted via %s EMAC", iface_name);
+    } else {
+        ESP_LOGW(TAG, "[DIAG] ✗ Failed to transmit raw frame via %s: %s", iface_name, esp_err_to_name(ret));
+    }
+    
+    return ret;
+}
+
+/**
+ * Bridge diagnostic task
+ * Periodically sends test packets to diagnose packet flow
+ */
+static void bridge_diagnostic_task(void *arg)
+{
+    ESP_LOGI(TAG, "[DIAG] ==========================================");
+    ESP_LOGI(TAG, "[DIAG] Bridge Diagnostic Task Started");
+    ESP_LOGI(TAG, "[DIAG] Will send test packets every %d ms", DIAGNOSTIC_INTERVAL_MS);
+    ESP_LOGI(TAG, "[DIAG] Note: Testing Ethernet driver (EMAC/IP101) directly");
+    ESP_LOGI(TAG, "[DIAG] ==========================================");
+    
+    // Wait for bridge to be fully operational
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    
+    uint32_t test_count = 0;
+    
+    while (1) {
+        test_count++;
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "[DIAG] ========== Test Round #%lu ==========", test_count);
+        
+        // Test: Send raw frame through Ethernet driver (EMAC)
+        if (s_eth_handle) {
+            ESP_LOGI(TAG, "[DIAG] Sending raw broadcast via ETHERNET driver (EMAC/IP101)");
+            send_raw_broadcast(s_eth_handle, "ETHERNET", s_common_mac);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        } else {
+            ESP_LOGW(TAG, "[DIAG] No Ethernet handle available");
+        }
+        
+        ESP_LOGI(TAG, "[DIAG] Test round #%lu completed", test_count);
+        
+        // Every 4 rounds (20 seconds), also check the bridge FDB table
+        if (test_count % 4 == 0 && s_br_netif) {
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "[DIAG] ========== Bridge FDB Status ==========");
+            ESP_LOGI(TAG, "[DIAG] The bridge should have learned MAC addresses from different ports.");
+            ESP_LOGI(TAG, "[DIAG] All ports have the same MAC (%02x:%02x:%02x:%02x:%02x:%02x),",
+                     s_common_mac[0], s_common_mac[1], s_common_mac[2],
+                     s_common_mac[3], s_common_mac[4], s_common_mac[5]);
+            ESP_LOGI(TAG, "[DIAG] but FDB learns SOURCE MACs from incoming packets.");
+            ESP_LOGI(TAG, "[DIAG] ");
+            ESP_LOGI(TAG, "[DIAG] Expected FDB behavior:");
+            ESP_LOGI(TAG, "[DIAG]   - Learns PC's MAC → Ethernet port");
+            ESP_LOGI(TAG, "[DIAG]   - Learns Router/AP MAC → WiFi port");
+            ESP_LOGI(TAG, "[DIAG]   - Learns other device MACs → respective ports");
+            ESP_LOGI(TAG, "[DIAG] ");
+            ESP_LOGI(TAG, "[DIAG] NOTE: FDB entries are learned dynamically from traffic.");
+            ESP_LOGI(TAG, "[DIAG] If no traffic yet, FDB may be empty (normal at startup).");
+            ESP_LOGI(TAG, "[DIAG] ");
+            ESP_LOGI(TAG, "[DIAG] To fully test FDB learning:");
+            ESP_LOGI(TAG, "[DIAG]   1. Send ping from PC → should learn PC's MAC on Ethernet");
+            ESP_LOGI(TAG, "[DIAG]   2. Get traffic from WiFi → should learn source MACs on WiFi");
+            ESP_LOGI(TAG, "[DIAG]   3. Check router ARP table to see if bridge MAC appears");
+            ESP_LOGI(TAG, "[DIAG] ==========================================");
+        }
+        
+        ESP_LOGI(TAG, "[DIAG] ======================================");
+        
+        // Wait before next round
+        vTaskDelay(pdMS_TO_TICKS(DIAGNOSTIC_INTERVAL_MS));
+    }
+}
+#endif // ENABLE_BRIDGE_DIAGNOSTICS
+
 /**
  * Main application entry point
  * 
@@ -321,7 +442,8 @@ void app_main(void)
     s_eth_handle = eth_handles[0];
     free(eth_handles);
     
-    // Set Ethernet MAC to the saved common MAC
+    // Set Ethernet MAC to the saved common MAC (PC's MAC)
+    // This makes the Ethernet port appear as the PC to the network
     ESP_ERROR_CHECK(esp_eth_ioctl(s_eth_handle, ETH_CMD_S_MAC_ADDR, s_common_mac));
     
     // Create Ethernet netif (flags = 0 for bridged port)
@@ -343,6 +465,23 @@ void app_main(void)
     // ========================================================================
     ESP_LOGI(TAG, "Step 2: Initializing WiFi...");
     
+    // Display esp-hosted network split configuration
+    ESP_LOGI(TAG, "ESP-Hosted Network Split Configuration:");
+#ifdef CONFIG_ESP_HOSTED_NETWORK_SPLIT_ENABLED
+    ESP_LOGI(TAG, "  Network Split: ENABLED");
+    #ifdef CONFIG_ESP_DEFAULT_LWIP_HOST
+        ESP_LOGI(TAG, "  Default LWIP: HOST (all packets processed on P4)");
+    #elif defined(CONFIG_ESP_DEFAULT_LWIP_SLAVE)
+        ESP_LOGW(TAG, "  Default LWIP: SLAVE (packets processed on C6) - NOT RECOMMENDED FOR BRIDGE!");
+    #elif defined(CONFIG_ESP_DEFAULT_LWIP_BOTH)
+        ESP_LOGW(TAG, "  Default LWIP: BOTH (packets processed on both) - NOT RECOMMENDED FOR BRIDGE!");
+    #else
+        ESP_LOGW(TAG, "  Default LWIP: NOT CONFIGURED - May use slave default!");
+    #endif
+#else
+    ESP_LOGW(TAG, "  Network Split: DISABLED - Bridge may not work correctly!");
+#endif
+    
     // Initialize WiFi Remote
     wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_remote_init(&wifi_cfg));
@@ -353,13 +492,26 @@ void app_main(void)
     // Set WiFi mode to STA
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     
-    // Set WiFi STA MAC to the same common MAC
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, s_common_mac));
+    // IMPORTANT: Do NOT set WiFi MAC to match Ethernet MAC!
+    // WiFi should keep its own MAC address (C6's MAC) so that:
+    // 1. Bridge FDB can distinguish between devices on different ports
+    // 2. When PC (Ethernet MAC) and Router communicate, bridge learns:
+    //    - PC's MAC → Ethernet port
+    //    - Router's MAC → WiFi port
+    // 3. In HOST_LWIP_BRIDGE mode, C6 forwards all frames regardless of MAC
+    // 4. Bridge uses promiscuous mode to receive all frames on both ports
     
     // Create WiFi STA netif (flags = 0 for bridged port)
+    // When using esp_wifi_remote, the standard esp_netif_create_wifi() is overridden
+    // by the component's injected headers to work correctly with remote WiFi
     esp_netif_inherent_config_t wifi_sta_cfg = ESP_NETIF_INHERENT_DEFAULT_WIFI_STA();
     wifi_sta_cfg.flags = 0;  // No flags for bridged port
     s_wifi_netif = esp_netif_create_wifi(WIFI_IF_STA, &wifi_sta_cfg);
+    
+    // Attach WiFi STA netif to WiFi driver (required when using esp_netif_create_wifi)
+    ESP_ERROR_CHECK(esp_netif_attach_wifi_station(s_wifi_netif));
+    
+    // Register default event handlers
     ESP_ERROR_CHECK(esp_wifi_set_default_wifi_sta_handlers());
     
     // Load and set WiFi credentials
@@ -404,6 +556,11 @@ void app_main(void)
     br_cfg.bridge_info = &bridgeif_config;
     
     // Set bridge MAC to the common MAC (PC's MAC)
+    // Bridge uses PC's MAC so it appears as the PC to both Ethernet and WiFi networks
+    // Note: Port MACs are different:
+    //   - Ethernet port: PC's MAC (s_common_mac)
+    //   - WiFi port: C6's own MAC (not changed)
+    // This allows FDB to properly learn which devices are on which ports
     memcpy(br_cfg.mac, s_common_mac, 6);
     s_br_netif = esp_netif_new(&br_netif_cfg);
     
@@ -469,6 +626,14 @@ void app_main(void)
     // ========================================================================
     xTaskCreate(reconfigure_button_task, "recfg_btn", 4096, NULL, 5, NULL);
     
+#if ENABLE_BRIDGE_DIAGNOSTICS
+    // ========================================================================
+    // Step 7: Start bridge diagnostic task
+    // ========================================================================
+    ESP_LOGI(TAG, "Starting bridge diagnostic task...");
+    xTaskCreate(bridge_diagnostic_task, "br_diag", 8192, NULL, 5, NULL);
+#endif
+    
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "===========================================");
     ESP_LOGI(TAG, "  Bridge Operational!");
@@ -479,6 +644,11 @@ void app_main(void)
     ESP_LOGI(TAG, "WiFi: %s", ssid);
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "To reconfigure: Long-press button for 2 seconds");
+#if ENABLE_BRIDGE_DIAGNOSTICS
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "⚠️  DIAGNOSTIC MODE ENABLED");
+    ESP_LOGI(TAG, "Sending test packets every %d ms to trace packet flow", DIAGNOSTIC_INTERVAL_MS);
+#endif
     ESP_LOGI(TAG, "===========================================");
     
     // Monitor and handle reconnection

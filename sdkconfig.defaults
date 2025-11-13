@@ -18,6 +18,15 @@ CONFIG_LWIP_L2_TO_L3_COPY=y
 # This allows C6 WiFi to work as a proper bridge port with packet filtering
 CONFIG_ESP_HOSTED_NETWORK_SPLIT_ENABLED=y
 
+# IMPORTANT: Set default LWIP to HOST mode
+# This means ALL packets are processed on the HOST (P4) side
+# The C6 slave only forwards packets without processing them
+CONFIG_ESP_DEFAULT_LWIP_HOST=y
+
+# Alternative modes (commented out):
+# CONFIG_ESP_DEFAULT_LWIP_SLAVE=y  # Process on C6 slave (not suitable for bridge)
+# CONFIG_ESP_DEFAULT_LWIP_BOTH=y   # Process on both (not suitable for bridge)
+
 # ==================== Network Stack Configuration ====================
 # Reasonable socket limit for bridge operation
 CONFIG_LWIP_MAX_SOCKETS=16
