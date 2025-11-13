@@ -525,6 +525,23 @@ void app_main(void)
     // ========================================================================
     ESP_LOGI(TAG, "Step 2: Initializing WiFi...");
     
+    // Display esp-hosted network split configuration
+    ESP_LOGI(TAG, "ESP-Hosted Network Split Configuration:");
+#ifdef CONFIG_ESP_HOSTED_NETWORK_SPLIT_ENABLED
+    ESP_LOGI(TAG, "  Network Split: ENABLED");
+    #ifdef CONFIG_ESP_DEFAULT_LWIP_HOST
+        ESP_LOGI(TAG, "  Default LWIP: HOST (all packets processed on P4)");
+    #elif defined(CONFIG_ESP_DEFAULT_LWIP_SLAVE)
+        ESP_LOGW(TAG, "  Default LWIP: SLAVE (packets processed on C6) - NOT RECOMMENDED FOR BRIDGE!");
+    #elif defined(CONFIG_ESP_DEFAULT_LWIP_BOTH)
+        ESP_LOGW(TAG, "  Default LWIP: BOTH (packets processed on both) - NOT RECOMMENDED FOR BRIDGE!");
+    #else
+        ESP_LOGW(TAG, "  Default LWIP: NOT CONFIGURED - May use slave default!");
+    #endif
+#else
+    ESP_LOGW(TAG, "  Network Split: DISABLED - Bridge may not work correctly!");
+#endif
+    
     // Initialize WiFi Remote
     wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_remote_init(&wifi_cfg));
