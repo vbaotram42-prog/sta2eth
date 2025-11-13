@@ -33,6 +33,7 @@
 #include "ethernet_init.h"
 #include "wifi_config_portal.h"
 #include "c6_ota.h"
+#include "lwip/def.h"  // For htons/ntohs
 
 static const char *TAG = "sta2eth";
 
@@ -267,8 +268,8 @@ static esp_err_t send_arp_broadcast(esp_netif_t *netif, const char *iface_name, 
     ESP_LOGI(TAG, "       Dst MAC: ff:ff:ff:ff:ff:ff (broadcast)");
     ESP_LOGI(TAG, "       Query: Who has 169.254.100.100?");
     
-    // Try to transmit through netif
-    esp_err_t ret = esp_netif_transmit(netif, &arp_pkt, sizeof(arp_pkt));
+    // Try to transmit through netif using esp_netif_transmit_wrap
+    esp_err_t ret = esp_netif_transmit_wrap(netif, &arp_pkt, sizeof(arp_pkt), &arp_pkt);
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "[DIAG] ✓ ARP packet transmitted via %s", iface_name);
     } else {
