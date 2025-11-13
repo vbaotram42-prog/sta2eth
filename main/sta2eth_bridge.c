@@ -362,6 +362,11 @@ void app_main(void)
     esp_netif_inherent_config_t wifi_sta_cfg = ESP_NETIF_INHERENT_DEFAULT_WIFI_STA();
     wifi_sta_cfg.flags = 0;  // No flags for bridged port
     s_wifi_netif = esp_netif_create_wifi(WIFI_IF_STA, &wifi_sta_cfg);
+    
+    // Attach WiFi STA netif to WiFi driver (required when using esp_netif_create_wifi)
+    ESP_ERROR_CHECK(esp_netif_attach_wifi_station(s_wifi_netif));
+    
+    // Register default event handlers
     ESP_ERROR_CHECK(esp_wifi_set_default_wifi_sta_handlers());
     
     // Load and set WiFi credentials
