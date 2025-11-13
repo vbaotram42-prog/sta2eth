@@ -203,81 +203,11 @@ static void reconfigure_button_task(void *arg)
 #if ENABLE_BRIDGE_DIAGNOSTICS
 /**
  * Bridge Diagnostic Functions
- * Send broadcast packets to test packet flow through bridge, Ethernet, and WiFi
+ * Send broadcast packets to test Ethernet driver (EMAC/IP101)
+ * 
+ * Note: Direct packet transmission through esp_netif is not supported in ESP-IDF.
+ * Bridge diagnostics test the Ethernet driver directly.
  */
-
-// ARP packet structure for broadcast testing
-typedef struct {
-    uint8_t dst_mac[6];      // Destination MAC (broadcast: ff:ff:ff:ff:ff:ff)
-    uint8_t src_mac[6];      // Source MAC
-    uint16_t eth_type;       // Ethernet type (0x0806 for ARP)
-    uint16_t hw_type;        // Hardware type (1 for Ethernet)
-    uint16_t proto_type;     // Protocol type (0x0800 for IPv4)
-    uint8_t hw_size;         // Hardware address size (6 for MAC)
-    uint8_t proto_size;      // Protocol address size (4 for IPv4)
-    uint16_t opcode;         // Operation (1 for request)
-    uint8_t sender_mac[6];   // Sender MAC
-    uint8_t sender_ip[4];    // Sender IP
-    uint8_t target_mac[6];   // Target MAC (00:00:00:00:00:00 for broadcast)
-    uint8_t target_ip[4];    // Target IP (broadcast query)
-} __attribute__((packed)) arp_packet_t;
-
-/**
- * Send ARP broadcast packet through specified interface
- */
-static esp_err_t send_arp_broadcast(esp_netif_t *netif, const char *iface_name, const uint8_t *src_mac)
-{
-    if (!netif || !src_mac) {
-        ESP_LOGE(TAG, "[DIAG] Invalid parameters for %s", iface_name);
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    // Build ARP request packet
-    arp_packet_t arp_pkt;
-    memset(&arp_pkt, 0, sizeof(arp_pkt));
-    
-    // Ethernet header
-    memset(arp_pkt.dst_mac, 0xff, 6);  // Broadcast MAC
-    memcpy(arp_pkt.src_mac, src_mac, 6);
-    arp_pkt.eth_type = htons(0x0806);  // ARP
-    
-    // ARP header
-    arp_pkt.hw_type = htons(1);        // Ethernet
-    arp_pkt.proto_type = htons(0x0800); // IPv4
-    arp_pkt.hw_size = 6;
-    arp_pkt.proto_size = 4;
-    arp_pkt.opcode = htons(1);          // ARP Request
-    
-    // Sender info
-    memcpy(arp_pkt.sender_mac, src_mac, 6);
-    arp_pkt.sender_ip[0] = 169;
-    arp_pkt.sender_ip[1] = 254;
-    arp_pkt.sender_ip[2] = 100;
-    arp_pkt.sender_ip[3] = 1;
-    
-    // Target info (query for 169.254.100.100)
-    memset(arp_pkt.target_mac, 0x00, 6);
-    arp_pkt.target_ip[0] = 169;
-    arp_pkt.target_ip[1] = 254;
-    arp_pkt.target_ip[2] = 100;
-    arp_pkt.target_ip[3] = 100;
-    
-    ESP_LOGI(TAG, "[DIAG] Sending ARP broadcast via %s:", iface_name);
-    ESP_LOGI(TAG, "       Src MAC: %02x:%02x:%02x:%02x:%02x:%02x",
-             src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]);
-    ESP_LOGI(TAG, "       Dst MAC: ff:ff:ff:ff:ff:ff (broadcast)");
-    ESP_LOGI(TAG, "       Query: Who has 169.254.100.100?");
-    
-    // Try to transmit through netif using esp_netif_transmit_wrap
-    esp_err_t ret = esp_netif_transmit_wrap(netif, &arp_pkt, sizeof(arp_pkt), &arp_pkt);
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "[DIAG] ✓ ARP packet transmitted via %s", iface_name);
-    } else {
-        ESP_LOGW(TAG, "[DIAG] ✗ Failed to transmit via %s: %s", iface_name, esp_err_to_name(ret));
-    }
-    
-    return ret;
-}
 
 /**
  * Send raw Ethernet broadcast frame
@@ -329,6 +259,7 @@ static void bridge_diagnostic_task(void *arg)
     ESP_LOGI(TAG, "[DIAG] ==========================================");
     ESP_LOGI(TAG, "[DIAG] Bridge Diagnostic Task Started");
     ESP_LOGI(TAG, "[DIAG] Will send test packets every %d ms", DIAGNOSTIC_INTERVAL_MS);
+    ESP_LOGI(TAG, "[DIAG] Note: Testing Ethernet driver (EMAC/IP101) directly");
     ESP_LOGI(TAG, "[DIAG] ==========================================");
     
     // Wait for bridge to be fully operational
@@ -341,32 +272,13 @@ static void bridge_diagnostic_task(void *arg)
         ESP_LOGI(TAG, "");
         ESP_LOGI(TAG, "[DIAG] ========== Test Round #%lu ==========", test_count);
         
-        // Test 1: Send ARP through bridge netif
-        if (s_br_netif) {
-            ESP_LOGI(TAG, "[DIAG] Test 1: Sending via BRIDGE netif");
-            send_arp_broadcast(s_br_netif, "BRIDGE", s_common_mac);
-            vTaskDelay(pdMS_TO_TICKS(500));
-        }
-        
-        // Test 2: Send ARP through Ethernet netif directly
-        if (s_eth_netif) {
-            ESP_LOGI(TAG, "[DIAG] Test 2: Sending via ETHERNET netif");
-            send_arp_broadcast(s_eth_netif, "ETHERNET", s_common_mac);
-            vTaskDelay(pdMS_TO_TICKS(500));
-        }
-        
-        // Test 3: Send ARP through WiFi netif directly
-        if (s_wifi_netif) {
-            ESP_LOGI(TAG, "[DIAG] Test 3: Sending via WIFI netif");
-            send_arp_broadcast(s_wifi_netif, "WIFI", s_common_mac);
-            vTaskDelay(pdMS_TO_TICKS(500));
-        }
-        
-        // Test 4: Send raw frame through Ethernet driver (EMAC)
+        // Test: Send raw frame through Ethernet driver (EMAC)
         if (s_eth_handle) {
-            ESP_LOGI(TAG, "[DIAG] Test 4: Sending raw via ETHERNET driver (EMAC/IP101)");
+            ESP_LOGI(TAG, "[DIAG] Sending raw broadcast via ETHERNET driver (EMAC/IP101)");
             send_raw_broadcast(s_eth_handle, "ETHERNET", s_common_mac);
             vTaskDelay(pdMS_TO_TICKS(500));
+        } else {
+            ESP_LOGW(TAG, "[DIAG] No Ethernet handle available");
         }
         
         ESP_LOGI(TAG, "[DIAG] Test round #%lu completed", test_count);
