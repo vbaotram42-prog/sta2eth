@@ -369,6 +369,32 @@ static void bridge_diagnostic_task(void *arg)
         }
         
         ESP_LOGI(TAG, "[DIAG] Test round #%lu completed", test_count);
+        
+        // Every 4 rounds (20 seconds), also check the bridge FDB table
+        if (test_count % 4 == 0 && s_br_netif) {
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "[DIAG] ========== Bridge FDB Status ==========");
+            ESP_LOGI(TAG, "[DIAG] The bridge should have learned MAC addresses from different ports.");
+            ESP_LOGI(TAG, "[DIAG] All ports have the same MAC (%02x:%02x:%02x:%02x:%02x:%02x),",
+                     s_common_mac[0], s_common_mac[1], s_common_mac[2],
+                     s_common_mac[3], s_common_mac[4], s_common_mac[5]);
+            ESP_LOGI(TAG, "[DIAG] but FDB learns SOURCE MACs from incoming packets.");
+            ESP_LOGI(TAG, "[DIAG] ");
+            ESP_LOGI(TAG, "[DIAG] Expected FDB behavior:");
+            ESP_LOGI(TAG, "[DIAG]   - Learns PC's MAC → Ethernet port");
+            ESP_LOGI(TAG, "[DIAG]   - Learns Router/AP MAC → WiFi port");
+            ESP_LOGI(TAG, "[DIAG]   - Learns other device MACs → respective ports");
+            ESP_LOGI(TAG, "[DIAG] ");
+            ESP_LOGI(TAG, "[DIAG] NOTE: FDB entries are learned dynamically from traffic.");
+            ESP_LOGI(TAG, "[DIAG] If no traffic yet, FDB may be empty (normal at startup).");
+            ESP_LOGI(TAG, "[DIAG] ");
+            ESP_LOGI(TAG, "[DIAG] To fully test FDB learning:");
+            ESP_LOGI(TAG, "[DIAG]   1. Send ping from PC → should learn PC's MAC on Ethernet");
+            ESP_LOGI(TAG, "[DIAG]   2. Get traffic from WiFi → should learn source MACs on WiFi");
+            ESP_LOGI(TAG, "[DIAG]   3. Check router ARP table to see if bridge MAC appears");
+            ESP_LOGI(TAG, "[DIAG] ==========================================");
+        }
+        
         ESP_LOGI(TAG, "[DIAG] ======================================");
         
         // Wait before next round
